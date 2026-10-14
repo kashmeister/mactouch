@@ -73,7 +73,7 @@ Options given to `install.sh` are passed to the agent; see [Configuration](#conf
 
 Then enable `touchbridge` in System Settings → Privacy & Security under both **Input Monitoring**
 and **Accessibility**. If it is not listed, add `bin/touchbridge` with **+**. The agent restarts
-itself once Input Monitoring is granted and picks up Accessibility within 2 s. The grants are tied
+itself every 20 s until Input Monitoring is granted and picks up Accessibility within 2 s. The grants are tied
 to the signing identifier `local.touchbridge`, so they survive rebuilds.
 
 The agent is ready when `~/Library/Logs/touchbridge.log` shows:

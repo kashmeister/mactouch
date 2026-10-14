@@ -396,12 +396,12 @@ log("start vid=\(hex(touchVID)) display=\(displaySpec) probe=\(probe) oneFingerS
     "twoFingerTap=\(twoFingerTap) zoom=\(zoomMode) hold=\(hold) titlebar=\(titlebar) cal=\(cal) " +
     "dragApps=\(dragApps.sorted()) zoomKeyApps=\(zoomKeyApps.sorted())")
 
-// Input Monitoring applies to new processes only: wait for the grant, then exit so launchd restarts us.
+// Input Monitoring applies to new processes only, and a running process never sees the grant:
+// exit after a while so launchd starts a fresh process that can.
 if IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone)) != kIOReturnSuccess {
     log("Input Monitoring missing; enable touchbridge in System Settings > Privacy & Security > Input Monitoring")
     _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-    while IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted { sleep(2) }
-    log("Input Monitoring granted; restarting")
+    sleep(20)
     exit(0)
 }
 log("Input Monitoring granted; HID manager open")

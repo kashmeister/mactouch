@@ -56,7 +56,7 @@ echo "installed $LABEL; log: $LOG"
 cat <<MSG
 
 Grant both permissions in System Settings > Privacy & Security:
-  Input Monitoring  the agent restarts itself once it is granted
+  Input Monitoring  picked up within about 25 s (the agent restarts until it is granted)
   Accessibility     applied to the running agent within 2 s
 If touchbridge is not listed, add $BIN with the + button.
 MSG
