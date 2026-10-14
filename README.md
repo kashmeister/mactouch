@@ -52,6 +52,10 @@ the window under the finger at touch-down:
 - in drag apps one finger always drags. The default is `AssistiveControl`, the macOS Accessibility
   Keyboard. Add apps whose sliders move the wrong way under scrolling, such as `eqMac`.
 
+Posted events do not count as user activity, so MacTouch also declares activity on every
+touch-down. That keeps the display awake while you use it and wakes it from display sleep. A touch
+on a sleeping display only wakes it; it does not click.
+
 Reading the controller needs Input Monitoring; posting events needs Accessibility.
 
 ## Alternatives

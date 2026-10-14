@@ -32,6 +32,7 @@
 import AppKit
 import IOKit
 import IOKit.hid
+import IOKit.pwr_mgt
 import ApplicationServices
 
 setvbuf(stdout, nil, _IOLBF, 0)
@@ -272,6 +273,13 @@ func startDrag(_ from: CGPoint, _ to: CGPoint) {
     mode = .dragging; log("drag start at \(Int(from.x)),\(Int(from.y))")
 }
 
+// Posted events don't count as user activity, so a touch alone would never wake a sleeping display
+// or reset the idle timer. Declaring activity does both.
+var activityID: IOPMAssertionID = 0
+func declareUserActivity() {
+    _ = IOPMAssertionDeclareUserActivity("MacTouch touch" as CFString, kIOPMUserActiveLocal, &activityID)
+}
+
 func endGesture() {   // release anything held, e.g. when pausing or the controller goes away
     if case .dragging = mode { post(.leftMouseUp, lastPt) }
     mode = .idle
@@ -338,6 +346,11 @@ func commit() {
         return
     }
     if cfg.paused { mode = .idle; return }
+    if n > 0 && lastN == 0 {   // touch-down
+        let asleep = CGDisplayIsAsleep(targetDisplay()) != 0
+        declareUserActivity()
+        if asleep { mode = .done; log("touch woke the display"); return }   // wake only, like a phone
+    }
     switch n {
     case 0:
         switch mode {
