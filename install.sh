@@ -1,25 +1,28 @@
 #!/bin/bash
-# Build touchbridge and install it as a per-user launch agent.
-#   ./install.sh [options]   options are passed to the agent; see the header of touchbridge.swift
+# Build MacTouch, copy it to ~/Applications and run it at login as a per-user launch agent.
+#   ./install.sh [options]   options are saved as settings; see the header of MacTouch.swift
 #   e.g. ./install.sh --one-finger-scroll --drag-apps=AssistiveControl,eqMac
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
-LABEL=local.touchbridge
-BIN="$DIR/bin/touchbridge"
+LABEL=local.mactouch
+APP="$HOME/Applications/MacTouch.app"
+BIN="$APP/Contents/MacOS/MacTouch"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG="$HOME/Library/Logs/touchbridge.log"
+LOG="$HOME/Library/Logs/MacTouch.log"
 
 "$DIR/build.sh"
-"$BIN" "$@" --check >/dev/null || { echo "invalid options: $*" >&2; exit 2; }
+"$DIR/build/MacTouch.app/Contents/MacOS/MacTouch" "$@" --check >/dev/null || { echo "invalid options: $*" >&2; exit 2; }
 
-ARGS="        <string>$BIN</string>"
-for a in "$@"; do
-    a="${a//&/&amp;}"; a="${a//</&lt;}"; a="${a//>/&gt;}"
-    ARGS="$ARGS
-        <string>$a</string>"
-done
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+# Earlier versions ran as local.touchbridge.
+if launchctl bootout "gui/$(id -u)/local.touchbridge" 2>/dev/null; then echo "stopped old local.touchbridge"; fi
+rm -f "$HOME/Library/LaunchAgents/local.touchbridge.plist"
 
-mkdir -p "$(dirname "$PLIST")" "$(dirname "$LOG")"
+mkdir -p "$HOME/Applications" "$(dirname "$PLIST")" "$(dirname "$LOG")"
+rm -rf "$APP"
+ditto "$DIR/build/MacTouch.app" "$APP"
+if [ $# -gt 0 ]; then "$BIN" --save "$@"; fi
+
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -29,12 +32,15 @@ cat > "$PLIST" <<PLIST
     <string>$LABEL</string>
     <key>ProgramArguments</key>
     <array>
-$ARGS
+        <string>$BIN</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>ThrottleInterval</key>
     <integer>5</integer>
     <key>ProcessType</key>
@@ -49,14 +55,12 @@ $ARGS
 </plist>
 PLIST
 plutil -lint -s "$PLIST"
-
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "installed $LABEL; log: $LOG"
+echo "installed $APP as $LABEL; log: $LOG"
 cat <<MSG
 
 Grant both permissions in System Settings > Privacy & Security:
-  Input Monitoring  picked up within about 25 s (the agent restarts until it is granted)
-  Accessibility     applied to the running agent within 2 s
-If touchbridge is not listed, add $BIN with the + button.
+  Input Monitoring  picked up within about 25 s (MacTouch restarts until it is granted)
+  Accessibility     applied to the running app within 2 s
+If MacTouch is not listed, add $APP with the + button.
 MSG
