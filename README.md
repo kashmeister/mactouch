@@ -66,6 +66,11 @@ Other ways to get a touchscreen working on macOS:
 - [UPDD](https://touch-base.com/download-macos) by Touch-Base: the commercial driver many monitor
   makers ship.
 
+Some touch monitors are a different case: macOS already drives them as an absolute-position mouse,
+but sends each touch to whichever display the cursor is on. MacTouch does not handle those; for the
+CX158 portable monitor, [cx158-touch-warp](https://github.com/kashmeister/cx158-touch-warp) redirects
+touches to the right display.
+
 | | MacTouch | Touch Up | MacXeneonEdgeTouchDriver | UPDD |
 |---|:-:|:-:|:-:|:-:|
 | Free and open source (MIT) | ✅ | ✅ | ✅ | ❌ paid license |
