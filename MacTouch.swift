@@ -158,14 +158,20 @@ func isTarget(_ d: CGDirectDisplayID) -> Bool {
     guard p.count == 2, let v = num(p[0]), let m = num(p[1]) else { return false }
     return CGDisplayVendorNumber(d) == UInt32(v) && CGDisplayModelNumber(d) == UInt32(m)
 }
-var cachedDisplay: CGDirectDisplayID?, targetFound = false
+var cachedDisplay: CGDirectDisplayID?, targetFound = false, lastLookup = 0.0
 func targetDisplay() -> CGDirectDisplayID {
-    if let d = cachedDisplay { return d }
+    // A fallback is retried every 2 s: around display sleep and wake the touch display can be
+    // briefly missing, and a reconfiguration notice may not follow.
+    if let d = cachedDisplay, targetFound || now() - lastLookup < 2 { return d }
+    lastLookup = now()
     let d = cfg.display == "main" ? nil : onlineDisplays().first(where: isTarget)
-    targetFound = d != nil || cfg.display == "main"
-    if !targetFound { log("display \(cfg.display) not connected; using the main display") }
-    cachedDisplay = d ?? CGMainDisplayID()
-    return cachedDisplay!
+    let found = d != nil || cfg.display == "main", use = d ?? CGMainDisplayID()
+    if use != cachedDisplay || found != targetFound {
+        log(found ? "using display \(use) rotation \(Int(CGDisplayRotation(use)))"
+                  : "display \(cfg.display) not connected; using the main display \(use)")
+    }
+    targetFound = found; cachedDisplay = use
+    return use
 }
 CGDisplayRegisterReconfigurationCallback({ _, flags, _ in
     if !flags.contains(.beginConfigurationFlag) { cachedDisplay = nil }
