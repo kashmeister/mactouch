@@ -59,6 +59,8 @@ struct Config {
     var dragApps = ["AssistiveControl"], zoomKeyApps: [String] = []
 }
 
+let identityCal: [Double] = [1, 0, 1, 0]
+
 enum Kind { case bool, double, int, string, zoom, list, cal }
 let options: [(flag: String, key: String, kind: Kind)] = [
     ("--vid", "vid", .int), ("--pid", "pid", .int), ("--display", "display", .string),
@@ -99,10 +101,11 @@ let checkOnly = args.contains("--check"), probe = args.contains("--probe"), raw 
 let defaults = UserDefaults.standard
 if args.contains("--reset") {
     for o in options { defaults.removeObject(forKey: o.key) }
-    defaults.removeObject(forKey: "paused")
+    defaults.removeObject(forKey: "paused"); defaults.removeObject(forKey: "previousCal")
     print("settings reset"); exit(0)
 }
 if args.contains("--save") {
+    if overrides["cal"] != nil, let old = defaults.array(forKey: "cal") { defaults.set(old, forKey: "previousCal") }
     for (k, v) in overrides { defaults.set(v, forKey: k) }
     print("saved: " + overrides.keys.sorted().joined(separator: ", ")); exit(0)
 }
@@ -117,7 +120,7 @@ func loadConfig() -> Config {
     rd("invertScroll", \.invertScroll); rd("paused", \.paused)
     rd("hold", \.hold); rd("scrollScale", \.scrollScale); rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
     rd("zoom", \.zoom); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
-    if c.cal.count != 4 || c.cal[0] == 0 || c.cal[2] == 0 { c.cal = [1, 0, 1, 0] }
+    if c.cal.count != 4 || c.cal[0] == 0 || c.cal[2] == 0 { c.cal = identityCal }
     return c
 }
 var cfg = loadConfig()
@@ -130,6 +133,16 @@ func setSetting(_ key: String, _ value: Any) {
     defaults.setVolatileDomain(vol, forName: UserDefaults.argumentDomain)
     cfg = loadConfig()
     log("set \(key) = \(value)")
+}
+
+// Every calibration change keeps the one it replaces, so Undo Calibration can switch back.
+var previousCal: [Double]? {
+    let v = defaults.array(forKey: "previousCal") as? [Double]
+    return v?.count == 4 && v![0] != 0 && v![2] != 0 ? v : nil
+}
+func setCalibration(_ new: [Double]) {
+    if new != cfg.cal { defaults.set(cfg.cal, forKey: "previousCal") }
+    setSetting("cal", new)
 }
 
 // MARK: target display
@@ -505,7 +518,7 @@ final class Calibrator: NSObject {
         let before = meanError(cfg.cal), after = meanError(new)
         finished = true
         if (0.8...1.25).contains(ax) && (0.8...1.25).contains(ay) && abs(bx) < 0.15 && abs(by) < 0.15 {
-            setSetting("cal", new)
+            setCalibration(new)
             message = String(format: "Saved. Average error on these taps: %.0f pt before, %.0f pt now.", before, after)
         } else {
             message = "These taps don't fit a calibration (check rotation and display); nothing was saved."
@@ -679,7 +692,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appList(menu, "Zoom-Key Apps", "zoomKeyApps", cfg.zoomKeyApps, "In these apps pinch sends ⌘+ / ⌘−.")
         menu.addItem(.separator())
         add(menu, "Calibrate Touch…", #selector(calibrate(_:)), enabled: hidOpen && !touchDevices().isEmpty)
-        add(menu, "Reset Calibration", #selector(resetCalibration(_:)), enabled: cfg.cal != [1, 0, 1, 0])
+        add(menu, "Undo Calibration", #selector(undoCalibration(_:)), enabled: previousCal.map { $0 != cfg.cal } ?? false)
+        add(menu, "Reset Calibration", #selector(resetCalibration(_:)), enabled: cfg.cal != identityCal)
         menu.addItem(.separator())
         add(menu, "Open Log", #selector(openLog(_:)))
         add(menu, "MacTouch on GitHub", #selector(openRepo(_:)))
@@ -752,7 +766,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setSetting(kv[0], list.filter { $0 != kv[1] })
     }
     @objc func calibrate(_ s: NSMenuItem) { calibrator.start() }
-    @objc func resetCalibration(_ s: NSMenuItem) { setSetting("cal", [1.0, 0, 1, 0]) }
+    @objc func resetCalibration(_ s: NSMenuItem) { setCalibration(identityCal) }
+    @objc func undoCalibration(_ s: NSMenuItem) { if let p = previousCal { setCalibration(p) } }   // a second undo redoes
     @objc func openLog(_ s: NSMenuItem) {
         let url = URL(fileURLWithPath: logPath)
         NSWorkspace.shared.open(FileManager.default.fileExists(atPath: logPath) ? url : url.deletingLastPathComponent())

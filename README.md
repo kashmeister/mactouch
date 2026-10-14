@@ -131,7 +131,8 @@ first line of the menu says which.
 | Long Press, Scroll Speed | Hold time and scroll speed |
 | Drag Apps, Zoom-Key Apps | Lists of apps with special handling. **Add …** adds the app that was in front when the menu opened; click an app to remove it |
 | Calibrate Touch… | Run the calibration wizard |
-| Reset Calibration | Go back to an uncalibrated mapping |
+| Undo Calibration | Switch back to the calibration before the last change; choose it again to redo |
+| Reset Calibration | Go back to an uncalibrated mapping; Undo restores the calibration |
 | Open Log | Open `~/Library/Logs/MacTouch.log` |
 | Quit MacTouch | Quit until the next login |
 
