@@ -17,8 +17,8 @@ To check a monitor, run `bin/touchbridge --check` and look for display vendor `0
 
 The controller enumerates as a HID multi-touch digitizer. macOS claims it with its generic HID
 driver but has no touchscreen support, so touches go nowhere: the pointer does not move and nothing
-clicks. The commercial fix is a third-party driver; this agent does the same job in about 400 lines
-of Swift.
+clicks. Other drivers fix this too (see [Alternatives](#alternatives)); this one is about 400 lines
+of Swift, tuned for this display, with per-app behaviour and calibration.
 
 ## How it works
 
@@ -53,6 +53,41 @@ up the window under the finger at touch-down:
   `eqMac`.
 
 Reading the controller needs Input Monitoring; posting events needs Accessibility.
+
+## Alternatives
+
+Other ways to get a touchscreen working on macOS:
+
+- [Touch Up](https://github.com/shueber/Touch-Up), from the RWTH Aachen HCI group: a general-purpose,
+  open-source driver app with a settings window and notarized releases. The most complete free
+  option, and the one to try first for other screens.
+- [MacXeneonEdgeTouchDriver](https://github.com/ajvwhite/MacXeneonEdgeTouchDriver): a launch agent
+  for the Corsair Xeneon Edge, which reports a single contact.
+- [UPDD](https://touch-base.com/download-macos) by Touch-Base: the commercial driver many monitor
+  makers ship.
+
+| | wisecoco-touchbridge | Touch Up | MacXeneonEdgeTouchDriver | UPDD |
+|---|:-:|:-:|:-:|:-:|
+| Free and open source (MIT) | ✅ | ✅ | ✅ | ❌ paid license |
+| Any HID multi-touch screen | ✅ via `--vid`, `--display` | ✅ | ❌ Xeneon Edge only | ✅ |
+| Multi-touch | ✅ | ✅ | ❌ | ✅ |
+| Tap, double-tap, drag | ✅ | ✅ | ✅ | ✅ |
+| One-finger scroll, hold to drag | ✅ | ✅ | ✅ | ✅ |
+| Two-finger scroll | ✅ | ❌ two-finger drag | ❌ | ✅ |
+| Right click | ✅ long press; optional two-finger tap | ✅ two-finger tap | ❌ | ✅ |
+| Pinch to zoom | ✅ | ✅ | ❌ | ✅ |
+| Follows display rotation | ✅ automatic | ✅ | ❌ landscape only | ✅ |
+| Targets one display among several | ✅ | ✅ | ✅ | ✅ |
+| Calibration | ✅ | ❌ | ❌ | ✅ |
+| Per-app behaviour | ✅ drag apps, zoom-key apps | ❌ | ❌ | ❓ |
+| Title bars drag without a hold | ✅ | ❌ | ❌ | ❓ |
+| Settings window | ❌ command-line options | ✅ | ❌ JSON file | ✅ |
+| Prebuilt, notarized download | ❌ build from source | ✅ | ❌ build from source | ✅ |
+| Permissions survive rebuilds | ✅ | ✅ signed app | ❓ | ✅ signed app |
+| Source size | ~400 lines of Swift | ~4,200 lines | ~28,000 lines with tests | closed |
+
+✅ supported · ❌ not supported · ❓ not verified. Compiled from each project's source and README in
+October 2026; UPDD from Touch-Base's documentation, not tested here. Corrections welcome.
 
 ## Requirements
 
