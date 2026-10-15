@@ -18,7 +18,7 @@ USB IDs `0x222a 0x1` with usage page 13 (digitizer). For other screens, see
 
 These controllers enumerate as HID multi-touch digitizers. macOS claims them with its generic HID
 driver but has no touchscreen support, so touches go nowhere: the pointer does not move and nothing
-clicks. Other drivers fix this too (see [Alternatives](#alternatives)); this one is about 700 lines
+clicks. Other drivers fix this too (see [Alternatives](#alternatives)); this one is about 800 lines
 of Swift, with per-app behaviour, two-finger scrolling and calibration.
 
 ## How it works
@@ -69,6 +69,10 @@ Other ways to get a touchscreen working on macOS:
 - [Touch Up](https://github.com/shueber/Touch-Up), from the RWTH Aachen HCI group: a general-purpose,
   open-source driver app with a settings window and notarized releases. A good choice for screens
   this project has not been tested with.
+- [macTouchScreen](https://github.com/hasanbahadirkoca/macTouchScreen) (app name TouchRemap): a menu
+  bar app with a settings window, built for the same ILITEK controller in an ARZOPA portable
+  monitor. It finds the right display by USB-C port and adds three- and four-finger swipes for
+  Spaces and Mission Control. Prebuilt but not notarized.
 - [MacXeneonEdgeTouchDriver](https://github.com/ajvwhite/MacXeneonEdgeTouchDriver): a launch agent
   for the Corsair Xeneon Edge, which reports a single contact.
 - [UPDD](https://touch-base.com/download-macos) by Touch-Base: the commercial driver many monitor
@@ -79,27 +83,28 @@ but sends each touch to whichever display the cursor is on. MacTouch does not ha
 CX158 portable monitor, [cx158-touch-warp](https://github.com/kashmeister/cx158-touch-warp) redirects
 touches to the right display.
 
-| | MacTouch | Touch Up | MacXeneonEdgeTouchDriver | UPDD |
-|---|:-:|:-:|:-:|:-:|
-| Free and open source (MIT) | ✅ | ✅ | ✅ | ❌ paid license |
-| Any HID multi-touch screen | ✅ | ✅ | ❌ Xeneon Edge only | ✅ |
-| Multi-touch | ✅ | ✅ | ❌ | ✅ |
-| Tap, double-tap, drag | ✅ | ✅ | ✅ | ✅ |
-| One-finger scroll, hold to drag | ✅ | ✅ | ✅ | ✅ |
-| Two-finger scroll | ✅ | ❌ two-finger drag | ❌ | ✅ |
-| Right click | ✅ long press; optional two-finger tap | ✅ two-finger tap | ❌ | ✅ |
-| Pinch to zoom | ✅ | ✅ | ❌ | ✅ |
-| Follows display rotation | ✅ automatic | ✅ | ❌ landscape only | ✅ |
-| Targets one display among several | ✅ | ✅ | ✅ | ✅ |
-| Calibration | ✅ built-in wizard | ❌ | ❌ | ✅ |
-| Per-app behaviour | ✅ drag apps, zoom-key apps | ❌ | ❌ | ❓ |
-| Title bars drag without a hold | ✅ | ❌ | ❌ | ❓ |
-| Settings UI | ✅ menu bar | ✅ window | ❌ JSON file | ✅ |
-| Prebuilt, notarized download | ❌ build from source | ✅ | ❌ build from source | ✅ |
-| Permissions survive rebuilds | ✅ | ✅ signed app | ❓ | ✅ signed app |
-| Source size | ~700 lines of Swift | ~4,200 lines | ~28,000 lines with tests | closed |
+| | MacTouch | Touch Up | macTouchScreen | MacXeneonEdgeTouchDriver | UPDD |
+|---|:-:|:-:|:-:|:-:|:-:|
+| Free and open source (MIT) | ✅ | ✅ | ✅ | ✅ | ❌ paid license |
+| Any HID multi-touch screen | ✅ | ✅ | ✅ | ❌ Xeneon Edge only | ✅ |
+| Multi-touch | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Tap, double-tap, drag | ✅ | ✅ | ✅ | ✅ | ✅ |
+| One-finger scroll, hold to drag | ✅ | ✅ | ❌ one finger drags | ✅ | ✅ |
+| Two-finger scroll | ✅ | ❌ two-finger drag | ✅ with momentum | ❌ | ✅ |
+| Right click | ✅ long press; optional two-finger tap | ✅ two-finger tap | ✅ long press or two-finger tap | ❌ | ✅ |
+| Pinch to zoom | ✅ trackpad zoom or ⌘+/⌘− | ✅ | ➖ ⌘+/⌘− only, off by default | ❌ | ✅ |
+| Three- and four-finger swipes | ❌ | ❌ | ✅ Spaces, Mission Control | ❌ | ❓ |
+| Follows display rotation | ✅ automatic | ✅ | ➖ manual swap/flip | ❌ landscape only | ✅ |
+| Targets one display among several | ✅ by vendor and model | ✅ | ✅ by USB-C port or by touch | ✅ | ✅ |
+| Calibration | ✅ built-in wizard | ❌ | ❌ | ❌ | ✅ |
+| Per-app behaviour | ✅ drag apps, zoom-key apps | ❌ | ❌ | ❌ | ❓ |
+| Title bars drag at once with one-finger scroll on | ✅ | ❌ | ➖ no one-finger scroll | ❌ | ❓ |
+| Settings UI | ✅ menu bar | ✅ window | ✅ menu bar and window | ❌ JSON file | ✅ |
+| Prebuilt download | ❌ build from source | ✅ notarized | ➖ not notarized | ❌ build from source | ✅ |
+| Permissions survive updates | ✅ | ✅ signed app | ❌ re-add after updates | ❓ | ✅ signed app |
+| Source size | ~800 lines of Swift | ~4,200 lines | ~2,500 lines with tests | ~28,000 lines with tests | closed |
 
-✅ supported · ❌ not supported · ❓ not verified. Compiled from each project's source and README in
+✅ supported · ➖ partly · ❌ not supported · ❓ not verified. Compiled from each project's source and README in
 October 2026; UPDD from Touch-Base's documentation, not tested here. Corrections welcome.
 
 ## Requirements
