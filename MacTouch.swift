@@ -534,11 +534,22 @@ func commit() {
 // MARK: keep the Accessibility Keyboard in place
 
 // While the touch display sleeps it can vanish from macOS for several seconds. Windows then move to a
-// stand-in display, and the Accessibility Keyboard's panels come back centred. MacTouch remembers where
-// the panels sit while the display is settled and moves them back once it returns.
+// stand-in display, and the Accessibility Keyboard's panels come back centred; unlocking centres them
+// again. MacTouch remembers where the panels sit while the display is settled and the screen unlocked,
+// and moves them back after display changes, wake, unlock and launch.
 let keyboardBundleID = "com.apple.inputmethod.AssistiveControl"
 var keyboardPositions = defaults.dictionary(forKey: "keyboardPositions") as? [String: String] ?? [:]
 var lastReconfig = now(), restoreGen = 0
+var screenLocked = (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
+
+// Restore after each delay; a newer request cancels the older one's remaining passes.
+func scheduleRestore(_ delays: [Double], _ why: String) {
+    lastReconfig = now(); restoreGen += 1
+    let g = restoreGen
+    for d in delays {
+        DispatchQueue.main.asyncAfter(deadline: .now() + d) { if g == restoreGen { restoreKeyboard(why) } }
+    }
+}
 
 func keyboardPanels() -> [(window: AXUIElement, origin: CGPoint, size: CGSize)] {
     guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: keyboardBundleID).first else { return [] }
@@ -562,19 +573,21 @@ func keyboardPanels() -> [(window: AXUIElement, origin: CGPoint, size: CGSize)] 
 func panelKey(_ s: CGSize) -> String { "\(Int((s.width / 10).rounded()) * 10)x\(Int((s.height / 10).rounded()) * 10)" }
 
 func rememberKeyboard() {
-    guard cfg.keepKeyboard, AXIsProcessTrusted(), now() - lastReconfig > 10 else { return }
-    _ = targetDisplay()
+    guard cfg.keepKeyboard, AXIsProcessTrusted(), !screenLocked, now() - lastReconfig > 10 else { return }
+    let d = CGDisplayBounds(targetDisplay())
     guard targetFound else { return }
     var changed = false
     for p in keyboardPanels() {
+        // A panel exactly centred is where macOS puts it after a reset, not where the user left it.
+        if abs(p.origin.x + p.size.width / 2 - d.midX) < 3 && abs(p.origin.y + p.size.height / 2 - d.midY) < 3 { continue }
         let k = panelKey(p.size), v = "\(Int(p.origin.x)),\(Int(p.origin.y))"
         if keyboardPositions[k] != v { keyboardPositions[k] = v; changed = true }
     }
     if changed { defaults.set(keyboardPositions, forKey: "keyboardPositions") }
 }
 
-func restoreKeyboard() {
-    guard cfg.keepKeyboard, AXIsProcessTrusted() else { return }
+func restoreKeyboard(_ why: String) {
+    guard cfg.keepKeyboard, AXIsProcessTrusted(), !screenLocked else { return }
     _ = targetDisplay()
     guard targetFound else { return }
     for p in keyboardPanels() {
@@ -582,7 +595,7 @@ func restoreKeyboard() {
               let x = Double(v[0]), let y = Double(v[1]), abs(p.origin.x - x) > 3 || abs(p.origin.y - y) > 3 else { continue }
         var np = CGPoint(x: x, y: y)
         if let pv = AXValueCreate(.cgPoint, &np), AXUIElementSetAttributeValue(p.window, kAXPositionAttribute as CFString, pv) == .success {
-            log("moved keyboard panel \(panelKey(p.size)) back to \(Int(x)),\(Int(y))")
+            log("moved keyboard panel \(panelKey(p.size)) back to \(Int(x)),\(Int(y)) (\(why))")
         }
     }
 }
@@ -777,14 +790,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.autoenablesItems = false
         item.menu = menu
         startHID()
-        // After display changes settle, put the keyboard back; the second pass catches late moves.
-        CGDisplayRegisterReconfigurationCallback({ _, _, _ in
-            lastReconfig = now(); restoreGen += 1
-            let g = restoreGen
-            for delay in [3.0, 8.0] {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { if g == restoreGen { restoreKeyboard() } }
-            }
-        }, nil)
+        // Put the keyboard back after display changes settle, after wake and unlock (which re-centre it),
+        // and at launch. Later passes catch late moves.
+        CGDisplayRegisterReconfigurationCallback({ _, _, _ in scheduleRestore([3, 8], "display change") }, nil)
+        let dnc = DistributedNotificationCenter.default()
+        dnc.addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { _ in
+            screenLocked = true; log("screen locked")
+        }
+        dnc.addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { _ in
+            screenLocked = false; log("screen unlocked"); scheduleRestore([1, 3, 8], "unlock")
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { _ in
+            scheduleRestore([3, 8], "wake")
+        }
+        scheduleRestore([2], "launch")
         Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in rememberKeyboard() }
         updateIcon()
     }

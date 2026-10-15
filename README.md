@@ -161,7 +161,7 @@ first line of the menu says which.
 | One-Finger Scroll | iPad-style scrolling, see [How it works](#how-it-works) |
 | Two-Finger Tap Right-Clicks | Two-finger tap as a right click |
 | Invert Scrolling | Reverse both scroll gestures |
-| Keep Keyboard Position | Put the Accessibility Keyboard back where it was after display sleep |
+| Keep Keyboard Position | Put the Accessibility Keyboard back where it was after display sleep, wake and unlock |
 | Pinch | Trackpad zoom, ⌘+ / ⌘− keys, or off |
 | Long Press, Scroll Speed | Hold time and scroll speed |
 | Multi-Finger Swipes | Three or four fingers, four only, or off |
