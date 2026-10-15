@@ -18,7 +18,7 @@ USB IDs `0x222a 0x1` with usage page 13 (digitizer). For other screens, see
 
 These controllers enumerate as HID multi-touch digitizers. macOS claims them with its generic HID
 driver but has no touchscreen support, so touches go nowhere: the pointer does not move and nothing
-clicks. Other drivers fix this too (see [Alternatives](#alternatives)); this one is about 800 lines
+clicks. Other drivers fix this too (see [Alternatives](#alternatives)); this one is about 900 lines
 of Swift, with per-app behaviour, two-finger scrolling and calibration.
 
 ## How it works
@@ -36,6 +36,9 @@ CGEvent:
 | Two fingers, move | Scroll | same |
 | Two fingers, pinch | Zoom | same |
 | Two fingers, tap | Right click if enabled | same |
+| Three or four fingers, swipe left/right | Switch Space | same |
+| Three or four fingers, swipe up/down | Mission Control / App Exposé | same |
+| One finger at a window edge, move | Resize the window | same |
 
 A tap clicks on lift, at the point where the finger landed, so a hold can still become a right
 click.
@@ -49,6 +52,9 @@ With one-finger scroll, some places need an immediate drag instead of a scroll. 
 the window under the finger at touch-down:
 
 - the top 44 pt of a normal window (title bar or toolbar) drags at once, so windows move;
+- within 12 pt of a window's side or bottom edge, or just above its top edge, the drag resizes the
+  window. Touches scatter by about that much, so MacTouch moves the press onto the edge and keeps
+  the finger's offset while you drag;
 - in drag apps one finger always drags. The default is `AssistiveControl`, the macOS Accessibility
   Keyboard. Add apps whose sliders move the wrong way under scrolling, such as `eqMac`.
 
@@ -59,6 +65,12 @@ on a sleeping display only wakes it; it does not click.
 Touch also works on the lock screen. With the Accessibility Keyboard turned on, you can wake the Mac
 and type your password by touch, without a mouse or keyboard attached. Turn off the keyboard's fade
 first; see [Troubleshooting](#troubleshooting).
+
+Swipes send ⌃← / ⌃→ for Spaces, with the modifier key presses a keyboard makes, and launch Mission
+Control directly for Mission Control and App Exposé, the approach used by
+[macTouchScreen](https://github.com/hasanbahadirkoca/macTouchScreen). Switching Spaces needs the
+"Move left/right a space" shortcuts enabled in System Settings → Keyboard → Keyboard Shortcuts →
+Mission Control, and at least two Spaces.
 
 Reading the controller needs Input Monitoring; posting events needs Accessibility.
 
@@ -93,7 +105,7 @@ touches to the right display.
 | Two-finger scroll | ✅ | ❌ two-finger drag | ✅ with momentum | ❌ | ✅ |
 | Right click | ✅ long press; optional two-finger tap | ✅ two-finger tap | ✅ long press or two-finger tap | ❌ | ✅ |
 | Pinch to zoom | ✅ trackpad zoom or ⌘+/⌘− | ✅ | ➖ ⌘+/⌘− only, off by default | ❌ | ✅ |
-| Three- and four-finger swipes | ❌ | ❌ | ✅ Spaces, Mission Control | ❌ | ❓ |
+| Three- and four-finger swipes | ✅ Spaces, Mission Control | ❌ | ✅ Spaces, Mission Control | ❌ | ❓ |
 | Follows display rotation | ✅ automatic | ✅ | ➖ manual swap/flip | ❌ landscape only | ✅ |
 | Targets one display among several | ✅ by vendor and model | ✅ | ✅ by USB-C port or by touch | ✅ | ✅ |
 | Calibration | ✅ built-in wizard | ❌ | ❌ | ❌ | ✅ |
@@ -102,7 +114,7 @@ touches to the right display.
 | Settings UI | ✅ menu bar | ✅ window | ✅ menu bar and window | ❌ JSON file | ✅ |
 | Prebuilt download | ❌ build from source | ✅ notarized | ➖ not notarized | ❌ build from source | ✅ |
 | Permissions survive updates | ✅ | ✅ signed app | ❌ re-add after updates | ❓ | ✅ signed app |
-| Source size | ~800 lines of Swift | ~4,200 lines | ~2,500 lines with tests | ~28,000 lines with tests | closed |
+| Source size | ~900 lines of Swift | ~4,200 lines | ~2,500 lines with tests | ~28,000 lines with tests | closed |
 
 ✅ supported · ➖ partly · ❌ not supported · ❓ not verified. Compiled from each project's source and README in
 October 2026; UPDD from Touch-Base's documentation, not tested here. Corrections welcome.
@@ -147,6 +159,8 @@ first line of the menu says which.
 | Invert Scrolling | Reverse both scroll gestures |
 | Pinch | Trackpad zoom, ⌘+ / ⌘− keys, or off |
 | Long Press, Scroll Speed | Hold time and scroll speed |
+| Multi-Finger Swipes | Three or four fingers, four only, or off |
+| Resize Windows at Edges | Drags that start at a window edge resize it |
 | Drag Apps, Zoom-Key Apps | Lists of apps with special handling. **Add …** adds the app that was in front when the menu opened; click an app to remove it |
 | Calibrate Touch… | Run the calibration wizard |
 | Undo Calibration | Switch back to the calibration before the last change; choose it again to redo |
@@ -194,6 +208,13 @@ Displays. 0° and 180° are tested; for 90° or 270°, or a panel mounted differ
 **Touches go to the wrong display.** MacTouch targets the display set by `--display`, falling back to
 the main display; the status line names the display in use. Find vendor and model with `--check`.
 
+**A swipe left or right does nothing.** Enable "Move left a space" and "Move right a space" in
+System Settings → Keyboard → Keyboard Shortcuts → Mission Control, and make sure there are at least
+two Spaces.
+
+**A drag near the edge of a maximized window does not scroll.** Window edges resize. Start the drag
+further in, or turn off **Resize Windows at Edges**.
+
 **A slider or control moves the wrong way.** With one-finger scroll, that app receives scrolls.
 Switch to the app, open the MacTouch menu and choose **Drag Apps → Add …**.
 
@@ -233,6 +254,8 @@ switches take `=false` to turn them off.
 | `--zoom-key-apps=` | none | Apps where pinch sends ⌘+/⌘− |
 | `--drag-apps=` | `AssistiveControl` | Apps where one finger always drags |
 | `--titlebar=` | `44` | Height in points of the drag zone at the top of each window; `0` turns it off |
+| `--edge=` | `12` | Distance in points from a window edge within which a drag resizes; `0` turns it off |
+| `--swipes=` | `3` | Multi-finger swipes with three or four fingers (`3`), four only (`4`), or `off` |
 
 App names are window owner names, usually the name shown in Activity Monitor.
 

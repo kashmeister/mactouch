@@ -9,6 +9,8 @@
 //   2 fingers, move         scroll
 //   2 fingers, pinch        zoom (trackpad magnify, or Cmd+/Cmd- per app)
 //   2 fingers, tap          right click     (only with two-finger tap)
+//   3-4 fingers, swipe      left/right: switch Space, up: Mission Control, down: App Exposé
+//   window edge, move       resize the window (a touch near an edge is moved onto it)
 //
 // Command line (settings options apply to this run only, unless --save is given)
 //   --check                 print displays, touch device, permissions and settings, then exit
@@ -29,6 +31,8 @@
 //   --drag-apps=A,B         apps where one finger always drags and hold does nothing (default AssistiveControl,
 //                           the Accessibility Keyboard)
 //   --titlebar=44           touches this many points from the top of a normal window drag at once (0 = off)
+//   --edge=12               touches this close to a window's side, bottom or top edge resize it (0 = off)
+//   --swipes=3|4|off        multi-finger swipes with three or four fingers, four only, or off
 import AppKit
 import IOKit
 import IOKit.hid
@@ -56,13 +60,13 @@ struct Config {
     var cal: [Double] = [1, 0, 1, 0]
     var oneFingerScroll = false, twoFingerTap = false, invertScroll = false, paused = false
     var hold = 0.6, scrollScale = 1.0, zoomScale = 1.0, titlebar = 44.0
-    var zoom = "gesture"
+    var zoom = "gesture", swipes = "3", edge = 12.0
     var dragApps = ["AssistiveControl"], zoomKeyApps: [String] = []
 }
 
 let identityCal: [Double] = [1, 0, 1, 0]
 
-enum Kind { case bool, double, int, string, zoom, list, cal }
+enum Kind { case bool, double, int, string, zoom, swipes, list, cal }
 let options: [(flag: String, key: String, kind: Kind)] = [
     ("--vid", "vid", .int), ("--pid", "pid", .int), ("--display", "display", .string),
     ("--flip-x", "flipX", .bool), ("--flip-y", "flipY", .bool), ("--swap", "swap", .bool), ("--cal", "cal", .cal),
@@ -70,6 +74,7 @@ let options: [(flag: String, key: String, kind: Kind)] = [
     ("--hold", "hold", .double), ("--scroll-scale", "scrollScale", .double), ("--invert-scroll", "invertScroll", .bool),
     ("--zoom", "zoom", .zoom), ("--zoom-scale", "zoomScale", .double),
     ("--zoom-key-apps", "zoomKeyApps", .list), ("--drag-apps", "dragApps", .list), ("--titlebar", "titlebar", .double),
+    ("--edge", "edge", .double), ("--swipes", "swipes", .swipes),
 ]
 let actionFlags: Set<String> = ["--check", "--save", "--reset", "--probe", "--raw"]
 
@@ -82,6 +87,7 @@ func parse(_ s: String, _ kind: Kind) -> Any? {
     case .int: return num(Substring(s))
     case .string: return s.isEmpty ? nil : s
     case .zoom: return ["gesture", "keys", "off"].contains(s) ? s : nil
+    case .swipes: return ["3", "4", "off"].contains(s) ? s : nil
     case .list: return s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     case .cal:
         let v = s.split(separator: ",").compactMap { Double($0) }
@@ -120,7 +126,7 @@ func loadConfig() -> Config {
     rd("oneFingerScroll", \.oneFingerScroll); rd("twoFingerTap", \.twoFingerTap)
     rd("invertScroll", \.invertScroll); rd("paused", \.paused)
     rd("hold", \.hold); rd("scrollScale", \.scrollScale); rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
-    rd("zoom", \.zoom); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
+    rd("zoom", \.zoom); rd("swipes", \.swipes); rd("edge", \.edge); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
     if c.cal.count != 4 || c.cal[0] == 0 || c.cal[2] == 0 { c.cal = identityCal }
     return c
 }
@@ -219,6 +225,27 @@ func windowAt(_ p: CGPoint) -> (owner: String, frame: CGRect, layer: Int)? {
     }
     return nil
 }
+// A touch within cfg.edge points of a normal window's left, right or bottom edge, or just above its
+// top edge, should resize it. Touches scatter by about that much, so the press is moved onto the
+// edge (1 pt outside the frame, inside the resize zone). Returns that point, or nil.
+func edgeGrab(_ p: CGPoint) -> CGPoint? {
+    guard cfg.edge > 0,
+          let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+    else { return nil }
+    let disp = CGDisplayBounds(targetDisplay()), t = cfg.edge
+    for w in list {
+        guard let bd = w[kCGWindowBounds as String], let r = CGRect(dictionaryRepresentation: bd as! CFDictionary) else { continue }
+        if (w[kCGWindowAlpha as String] as? Double ?? 1) == 0 || r.contains(disp) { continue }
+        guard r.insetBy(dx: -t, dy: -t).contains(p) else { continue }
+        guard (w[kCGWindowLayer as String] as? Int ?? 0) == 0 else { return nil }   // the topmost window here decides
+        var q = p
+        if abs(p.x - r.minX) <= t { q.x = r.minX - 1 } else if abs(p.x - r.maxX) <= t { q.x = r.maxX }
+        if abs(p.y - r.maxY) <= t { q.y = r.maxY } else if p.y < r.minY { q.y = r.minY - 1 }
+        return q == p ? nil : q
+    }
+    return nil
+}
+
 // Window owner name of a running app, as windowAt reports it.
 func ownerName(of app: NSRunningApplication) -> String {
     let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
@@ -236,6 +263,7 @@ enum Mode {
     case dragging
     case scroll1                    // one-finger scroll: scrolling with one finger
     case two(CGPoint, Double, Two)  // last centroid, start time, gesture kind
+    case swipe(CGPoint, CGPoint, Bool)   // 3+ fingers: origin, last centroid, action fired
     case done                       // gesture consumed; wait for all fingers up
 }
 
@@ -247,6 +275,8 @@ var lastTapTime = 0.0, lastTapPt = CGPoint.zero, clicks: Int64 = 1
 var accX = 0.0, accY = 0.0
 var pinchStart = 0.0, pinchLast = 0.0, zoomKeyAcc = 0.0
 var inDragApp = false, zoomHere = "gesture"   // decided per gesture from the window under the finger(s)
+var edgeSnap: CGPoint?, dragOffset = CGPoint.zero   // window-edge resize: press point on the edge, finger offset
+func shifted(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x + dragOffset.x, y: p.y + dragOffset.y) }
 let src = CGEventSource(stateID: .hidSystemState)
 
 // MARK: event output
@@ -287,7 +317,7 @@ func declareUserActivity() {
 }
 
 func endGesture() {   // release anything held, e.g. when pausing or the controller goes away
-    if case .dragging = mode { post(.leftMouseUp, lastPt) }
+    if case .dragging = mode { post(.leftMouseUp, shifted(lastPt)) }
     mode = .idle
 }
 
@@ -316,12 +346,47 @@ func magnify(_ m: Double, phase: Int64, at p: CGPoint) {   // phase: 1 began, 2 
     e.post(tap: .cghidEventTap)
 }
 
-func zoomKey(_ zoomIn: Bool) {   // Cmd+= / Cmd+-
-    for down in [true, false] {
-        guard let e = CGEvent(keyboardEventSource: src, virtualKey: zoomIn ? 24 : 27, keyDown: down) else { continue }
-        e.flags = .maskCommand
+// Presses a key like a keyboard does: modifier keys go down first and come up last, so the system
+// never believes ⌃ or ⌘ stays held. (Approach from macTouchScreen.)
+func keyCombo(_ code: CGKeyCode, _ flags: CGEventFlags) {
+    func send(_ c: CGKeyCode, _ down: Bool, _ f: CGEventFlags) {
+        guard let e = CGEvent(keyboardEventSource: src, virtualKey: c, keyDown: down) else { return }
+        if c == 59 || c == 55 { e.type = .flagsChanged }
+        e.flags = f
         e.post(tap: .cghidEventTap)
     }
+    let mods: [(CGKeyCode, CGEventFlags)] = [(59, .maskControl), (55, .maskCommand)].filter { flags.contains($0.1) }
+    var held: CGEventFlags = []
+    for (m, f) in mods { held.insert(f); send(m, true, held) }
+    send(code, true, flags); send(code, false, flags)
+    for (m, f) in mods.reversed() { held.remove(f); send(m, false, held) }
+}
+
+func zoomKey(_ zoomIn: Bool) { keyCombo(zoomIn ? 24 : 27, .maskCommand) }   // Cmd+= / Cmd+-
+
+// Launching Mission Control toggles it whatever the keyboard shortcuts are; argument "2" opens App
+// Exposé for the frontmost app.
+func missionControl(_ arguments: [String] = []) {
+    let config = NSWorkspace.OpenConfiguration()
+    config.arguments = arguments
+    config.activates = false
+    NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/System/Applications/Mission Control.app"),
+                                       configuration: config) { _, error in if let error { log("Mission Control: \(error)") } }
+}
+
+// Fires the swipe action once the fingers have travelled far enough; returns whether it fired.
+// Directions follow the trackpad: fingers moving left show the Space to the right.
+func swipeAction(_ dx: Double, _ dy: Double, at c: CGPoint) -> Bool {
+    let b = CGDisplayBounds(targetDisplay())
+    let needX = min(b.width * 0.1, 160), needY = min(b.height * 0.12, 120)
+    let arrows: CGEventFlags = [.maskControl, .maskSecondaryFn]   // exactly the system shortcut's flags
+    post(.mouseMoved, c)   // act on the touched display
+    if abs(dx) > needX && abs(dx) > 1.5 * abs(dy) {
+        keyCombo(dx < 0 ? 124 : 123, arrows); log("swipe \(dx < 0 ? "left: next" : "right: previous") Space")
+    } else if abs(dy) > needY && abs(dy) > 1.5 * abs(dx) {
+        if dy < 0 { missionControl(); log("swipe up: Mission Control") } else { missionControl(["2"]); log("swipe down: App Exposé") }
+    } else { return false }
+    return true
 }
 
 func pinch(_ d: Double, at c: CGPoint) {
@@ -362,7 +427,8 @@ func commit() {
         switch mode {
         case .pending(let s, _): tap(s)
         case .held(let s): rightClick(s, "long press")
-        case .dragging: post(.leftMouseUp, lastPt); log("drag end at \(Int(lastPt.x)),\(Int(lastPt.y))")
+        case .dragging: post(.leftMouseUp, shifted(lastPt)); log("drag end at \(Int(lastPt.x)),\(Int(lastPt.y))")
+        case .swipe(_, _, let fired): if !fired { log("swipe end (too short)") }
         case .scroll1: log("scroll end (1 finger)")
         case .two(let c, let t0, let kind):
             switch kind {
@@ -378,10 +444,12 @@ func commit() {
         switch mode {
         case .idle:
             post(.mouseMoved, p)
+            dragOffset = .zero
+            edgeSnap = edgeGrab(p)
             let win = windowAt(p), app = win?.owner ?? ""
             let onTitlebar = win.map { $0.layer == 0 && p.y - $0.frame.minY < cfg.titlebar } ?? false
-            inDragApp = cfg.dragApps.contains(app) || onTitlebar
-            if inDragApp { log("down in \(app)\(onTitlebar ? " title bar" : ""): drag mode") }
+            inDragApp = cfg.dragApps.contains(app) || onTitlebar || edgeSnap != nil
+            if inDragApp { log("down in \(app)\(edgeSnap != nil ? " window edge" : onTitlebar ? " title bar" : ""): drag mode") }
             pressSeq += 1
             let seq = pressSeq
             mode = .pending(p, seq)
@@ -392,14 +460,17 @@ func commit() {
             }
         case .pending(let s, _):
             if dist(p, s) > moveTol {
-                if cfg.oneFingerScroll && !inDragApp {
+                if let snap = edgeSnap {   // resize: press on the edge, then keep the finger's offset
+                    dragOffset = CGPoint(x: snap.x - s.x, y: snap.y - s.y)
+                    post(.mouseMoved, snap); startDrag(snap, shifted(p))
+                } else if cfg.oneFingerScroll && !inDragApp {
                     mode = .scroll1; accX = 0; accY = 0; scroll(p.x - s.x, p.y - s.y); log("scroll start (1 finger)")
                 } else { startDrag(s, p) }
             }
         case .held(let s):
             if dist(p, s) > moveTol { startDrag(s, p) }
         case .dragging:
-            if p != lastPt { post(.leftMouseDragged, p) }
+            if p != lastPt { post(.leftMouseDragged, shifted(p)) }
         case .scroll1:
             if lastN == 1 { scroll(p.x - lastPt.x, p.y - lastPt.y) }
         default: break   // one finger left over from a two-finger gesture
@@ -407,6 +478,26 @@ func commit() {
     default:
         let c = CGPoint(x: active.map(\.x).reduce(0, +) / Double(n), y: active.map(\.y).reduce(0, +) / Double(n))
         let d = dist(active[0], active[1])
+        let minFingers = cfg.swipes == "4" ? 4 : 3
+        if case .swipe(let origin, let last, var fired) = mode {
+            // Finger count changed: shift the origin so the travel so far is kept, not the centroid jump.
+            let o = n == lastN ? origin : CGPoint(x: origin.x + c.x - last.x, y: origin.y + c.y - last.y)
+            if !fired && n >= minFingers { fired = swipeAction(c.x - o.x, c.y - o.y, at: c) }
+            mode = .swipe(o, c, fired)
+            return
+        }
+        if cfg.swipes != "off" && n >= 3 {
+            var start = false
+            switch mode {
+            case .two(_, _, .undecided), .idle, .pending, .held, .scroll1, .dragging: start = true
+            default: break
+            }
+            if start {
+                if case .dragging = mode { post(.leftMouseUp, shifted(lastPt)) }
+                mode = .swipe(c, c, false); log("swipe start (\(n) fingers)")
+                return
+            }
+        }
         switch mode {
         case .two(let last, let t0, var kind):
             if n == lastN {   // finger count changed -> re-anchor instead of jumping
@@ -431,7 +522,7 @@ func commit() {
             mode = .two(c, t0, kind)
         case .done: break
         default:
-            if case .dragging = mode { post(.leftMouseUp, lastPt) }
+            if case .dragging = mode { post(.leftMouseUp, shifted(lastPt)) }
             twoStart = c; pinchStart = d; pinchLast = 0; accX = 0; accY = 0
             post(.mouseMoved, c)
             mode = .two(c, now(), .undecided)
@@ -706,6 +797,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         choices(menu, "Pinch", "zoom", cfg.zoom, [("Trackpad Zoom", "gesture"), ("⌘+ / ⌘− Keys", "keys"), ("Off", "off")])
         choices(menu, "Long Press", "hold", cfg.hold, [0.4, 0.5, 0.6, 0.8, 1.0].map { (String(format: "%.1f s", $0), $0) })
         choices(menu, "Scroll Speed", "scrollScale", cfg.scrollScale, [0.5, 0.75, 1.0, 1.5, 2.0].map { ("\($0)×", $0) })
+        choices(menu, "Multi-Finger Swipes", "swipes", cfg.swipes, [("Three or Four Fingers", "3"), ("Four Fingers Only", "4"), ("Off", "off")])
+        add(menu, "Resize Windows at Edges", #selector(toggleEdge(_:)), on: cfg.edge > 0)
         menu.addItem(.separator())
         appList(menu, "Drag Apps", "dragApps", cfg.dragApps, "In these apps one finger always drags.")
         appList(menu, "Zoom-Key Apps", "zoomKeyApps", cfg.zoomKeyApps, "In these apps pinch sends ⌘+ / ⌘−.")
@@ -770,6 +863,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setSetting(key, !value(key))
         updateIcon()
     }
+    @objc func toggleEdge(_ s: NSMenuItem) { setSetting("edge", cfg.edge > 0 ? 0.0 : 12.0) }
     @objc func choose(_ s: NSMenuItem) {
         guard let kv = s.representedObject as? [Any], let key = kv[0] as? String else { return }
         setSetting(key, kv[1])
