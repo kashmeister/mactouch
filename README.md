@@ -188,6 +188,12 @@ the main display; the status line names the display in use. Find vendor and mode
 **A slider or control moves the wrong way.** With one-finger scroll, that app receives scrolls.
 Switch to the app, open the MacTouch menu and choose **Drag Apps → Add …**.
 
+**The Accessibility Keyboard fades out and touch cannot bring it back.** The keyboard reappears on
+pointer movement from real hardware, and MacTouch's events are synthetic. On the lock screen a faded
+keyboard disappears completely. In System Settings → Accessibility → Keyboard, click ⓘ next to
+Accessibility Keyboard and turn off **Fade after inactivity**, or choose **Panel Options…** from the
+keyboard's own options menu.
+
 **A permission is enabled but MacTouch says it is missing.** Privacy & Security can list several
 entries from earlier builds, or from the older `touchbridge` version. Remove them all with **−**,
 then add `~/Applications/MacTouch.app` once.
