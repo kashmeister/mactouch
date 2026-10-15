@@ -33,6 +33,7 @@
 //   --titlebar=44           touches this many points from the top of a normal window drag at once (0 = off)
 //   --edge=12               touches this close to a window's side, bottom or top edge resize it (0 = off)
 //   --swipes=3|4|off        multi-finger swipes with three or four fingers, four only, or off
+//   --keep-keyboard         put the Accessibility Keyboard back where it was after the display sleeps (default on)
 import AppKit
 import IOKit
 import IOKit.hid
@@ -58,7 +59,7 @@ struct Config {
     var vid = 0x222A, pid = 0, display = "0x2613:0x2023"
     var flipX = false, flipY = false, swap = false
     var cal: [Double] = [1, 0, 1, 0]
-    var oneFingerScroll = false, twoFingerTap = false, invertScroll = false, paused = false
+    var oneFingerScroll = false, twoFingerTap = false, invertScroll = false, paused = false, keepKeyboard = true
     var hold = 0.6, scrollScale = 1.0, zoomScale = 1.0, titlebar = 44.0
     var zoom = "gesture", swipes = "3", edge = 12.0
     var dragApps = ["AssistiveControl"], zoomKeyApps: [String] = []
@@ -74,7 +75,7 @@ let options: [(flag: String, key: String, kind: Kind)] = [
     ("--hold", "hold", .double), ("--scroll-scale", "scrollScale", .double), ("--invert-scroll", "invertScroll", .bool),
     ("--zoom", "zoom", .zoom), ("--zoom-scale", "zoomScale", .double),
     ("--zoom-key-apps", "zoomKeyApps", .list), ("--drag-apps", "dragApps", .list), ("--titlebar", "titlebar", .double),
-    ("--edge", "edge", .double), ("--swipes", "swipes", .swipes),
+    ("--edge", "edge", .double), ("--swipes", "swipes", .swipes), ("--keep-keyboard", "keepKeyboard", .bool),
 ]
 let actionFlags: Set<String> = ["--check", "--save", "--reset", "--probe", "--raw"]
 
@@ -108,7 +109,7 @@ let checkOnly = args.contains("--check"), probe = args.contains("--probe"), raw 
 let defaults = UserDefaults.standard
 if args.contains("--reset") {
     for o in options { defaults.removeObject(forKey: o.key) }
-    defaults.removeObject(forKey: "paused"); defaults.removeObject(forKey: "previousCal")
+    for k in ["paused", "previousCal", "keyboardPositions"] { defaults.removeObject(forKey: k) }
     print("settings reset"); exit(0)
 }
 if args.contains("--save") {
@@ -124,7 +125,7 @@ func loadConfig() -> Config {
     rd("vid", \.vid); rd("pid", \.pid); rd("display", \.display)
     rd("flipX", \.flipX); rd("flipY", \.flipY); rd("swap", \.swap); rd("cal", \.cal)
     rd("oneFingerScroll", \.oneFingerScroll); rd("twoFingerTap", \.twoFingerTap)
-    rd("invertScroll", \.invertScroll); rd("paused", \.paused)
+    rd("invertScroll", \.invertScroll); rd("paused", \.paused); rd("keepKeyboard", \.keepKeyboard)
     rd("hold", \.hold); rd("scrollScale", \.scrollScale); rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
     rd("zoom", \.zoom); rd("swipes", \.swipes); rd("edge", \.edge); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
     if c.cal.count != 4 || c.cal[0] == 0 || c.cal[2] == 0 { c.cal = identityCal }
@@ -530,6 +531,61 @@ func commit() {
     }
 }
 
+// MARK: keep the Accessibility Keyboard in place
+
+// While the touch display sleeps it can vanish from macOS for several seconds. Windows then move to a
+// stand-in display, and the Accessibility Keyboard's panels come back centred. MacTouch remembers where
+// the panels sit while the display is settled and moves them back once it returns.
+let keyboardBundleID = "com.apple.inputmethod.AssistiveControl"
+var keyboardPositions = defaults.dictionary(forKey: "keyboardPositions") as? [String: String] ?? [:]
+var lastReconfig = now(), restoreGen = 0
+
+func keyboardPanels() -> [(window: AXUIElement, origin: CGPoint, size: CGSize)] {
+    guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: keyboardBundleID).first else { return [] }
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(app.processIdentifier), kAXWindowsAttribute as CFString, &v) == .success,
+          let windows = v as? [AXUIElement] else { return [] }
+    let disp = CGDisplayBounds(targetDisplay())
+    return windows.compactMap { w in
+        var pv: CFTypeRef?, sv: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &pv) == .success,
+              AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &sv) == .success else { return nil }
+        var p = CGPoint.zero, sz = CGSize.zero
+        AXValueGetValue(pv as! AXValue, .cgPoint, &p)
+        AXValueGetValue(sv as! AXValue, .cgSize, &sz)
+        if sz.width < 20 || sz.height < 20 || (sz.width >= disp.width && sz.height >= disp.height) { return nil }   // overlay layers
+        return (w, p, sz)
+    }
+}
+// Panels are told apart by size: the minimized panel and the full keyboard each keep their own spot.
+func panelKey(_ s: CGSize) -> String { "\(Int((s.width / 10).rounded()) * 10)x\(Int((s.height / 10).rounded()) * 10)" }
+
+func rememberKeyboard() {
+    guard cfg.keepKeyboard, AXIsProcessTrusted(), now() - lastReconfig > 10 else { return }
+    _ = targetDisplay()
+    guard targetFound else { return }
+    var changed = false
+    for p in keyboardPanels() {
+        let k = panelKey(p.size), v = "\(Int(p.origin.x)),\(Int(p.origin.y))"
+        if keyboardPositions[k] != v { keyboardPositions[k] = v; changed = true }
+    }
+    if changed { defaults.set(keyboardPositions, forKey: "keyboardPositions") }
+}
+
+func restoreKeyboard() {
+    guard cfg.keepKeyboard, AXIsProcessTrusted() else { return }
+    _ = targetDisplay()
+    guard targetFound else { return }
+    for p in keyboardPanels() {
+        guard let v = keyboardPositions[panelKey(p.size)]?.split(separator: ","), v.count == 2,
+              let x = Double(v[0]), let y = Double(v[1]), abs(p.origin.x - x) > 3 || abs(p.origin.y - y) > 3 else { continue }
+        var np = CGPoint(x: x, y: y)
+        if let pv = AXValueCreate(.cgPoint, &np), AXUIElementSetAttributeValue(p.window, kAXPositionAttribute as CFString, pv) == .success {
+            log("moved keyboard panel \(panelKey(p.size)) back to \(Int(x)),\(Int(y))")
+        }
+    }
+}
+
 // MARK: calibration wizard
 
 // Full-screen targets on the touch display. Each tap's touch-down point, before calibration, is
@@ -720,6 +776,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.autoenablesItems = false
         item.menu = menu
         startHID()
+        // After display changes settle, put the keyboard back; the second pass catches late moves.
+        CGDisplayRegisterReconfigurationCallback({ _, _, _ in
+            lastReconfig = now(); restoreGen += 1
+            let g = restoreGen
+            for delay in [3.0, 8.0] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { if g == restoreGen { restoreKeyboard() } }
+            }
+        }, nil)
+        Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in rememberKeyboard() }
         updateIcon()
     }
 
@@ -794,6 +859,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(menu, "One-Finger Scroll", #selector(toggle(_:)), on: cfg.oneFingerScroll, obj: "oneFingerScroll")
         add(menu, "Two-Finger Tap Right-Clicks", #selector(toggle(_:)), on: cfg.twoFingerTap, obj: "twoFingerTap")
         add(menu, "Invert Scrolling", #selector(toggle(_:)), on: cfg.invertScroll, obj: "invertScroll")
+        add(menu, "Keep Keyboard Position", #selector(toggle(_:)), on: cfg.keepKeyboard, obj: "keepKeyboard")
         choices(menu, "Pinch", "zoom", cfg.zoom, [("Trackpad Zoom", "gesture"), ("⌘+ / ⌘− Keys", "keys"), ("Off", "off")])
         choices(menu, "Long Press", "hold", cfg.hold, [0.4, 0.5, 0.6, 0.8, 1.0].map { (String(format: "%.1f s", $0), $0) })
         choices(menu, "Scroll Speed", "scrollScale", cfg.scrollScale, [0.5, 0.75, 1.0, 1.5, 2.0].map { ("\($0)×", $0) })
@@ -853,6 +919,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "oneFingerScroll": return cfg.oneFingerScroll
         case "twoFingerTap": return cfg.twoFingerTap
         case "invertScroll": return cfg.invertScroll
+        case "keepKeyboard": return cfg.keepKeyboard
         default: return false
         }
     }

@@ -72,6 +72,10 @@ Control directly for Mission Control and App Exposé, the approach used by
 "Move left/right a space" shortcuts enabled in System Settings → Keyboard → Keyboard Shortcuts →
 Mission Control, and at least two Spaces.
 
+Some displays drop off the bus while they sleep. macOS then moves windows to a stand-in display, and
+the Accessibility Keyboard comes back centred. MacTouch remembers where the keyboard's panels sit
+while the display is settled and moves them back a few seconds after it returns.
+
 Reading the controller needs Input Monitoring; posting events needs Accessibility.
 
 ## Alternatives
@@ -157,6 +161,7 @@ first line of the menu says which.
 | One-Finger Scroll | iPad-style scrolling, see [How it works](#how-it-works) |
 | Two-Finger Tap Right-Clicks | Two-finger tap as a right click |
 | Invert Scrolling | Reverse both scroll gestures |
+| Keep Keyboard Position | Put the Accessibility Keyboard back where it was after display sleep |
 | Pinch | Trackpad zoom, ⌘+ / ⌘− keys, or off |
 | Long Press, Scroll Speed | Hold time and scroll speed |
 | Multi-Finger Swipes | Three or four fingers, four only, or off |
@@ -255,6 +260,7 @@ switches take `=false` to turn them off.
 | `--drag-apps=` | `AssistiveControl` | Apps where one finger always drags |
 | `--titlebar=` | `44` | Height in points of the drag zone at the top of each window; `0` turns it off |
 | `--edge=` | `12` | Distance in points from a window edge within which a drag resizes; `0` turns it off |
+| `--keep-keyboard` | on | Restore the Accessibility Keyboard's position after display sleep |
 | `--swipes=` | `3` | Multi-finger swipes with three or four fingers (`3`), four only (`4`), or `off` |
 
 App names are window owner names, usually the name shown in Activity Monitor.
