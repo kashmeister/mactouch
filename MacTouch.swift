@@ -553,7 +553,8 @@ func keyboardPanels() -> [(window: AXUIElement, origin: CGPoint, size: CGSize)] 
         var p = CGPoint.zero, sz = CGSize.zero
         AXValueGetValue(pv as! AXValue, .cgPoint, &p)
         AXValueGetValue(sv as! AXValue, .cgSize, &sz)
-        if sz.width < 20 || sz.height < 20 || (sz.width >= disp.width && sz.height >= disp.height) { return nil }   // overlay layers
+        // Skip the transparent overlay layers: they span a whole display, possibly the stand-in one.
+        if sz.width < 20 || sz.height < 20 || sz.width >= disp.width || sz.height >= disp.height { return nil }
         return (w, p, sz)
     }
 }
