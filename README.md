@@ -56,6 +56,10 @@ Posted events do not count as user activity, so MacTouch also declares activity 
 touch-down. That keeps the display awake while you use it and wakes it from display sleep. A touch
 on a sleeping display only wakes it; it does not click.
 
+Touch also works on the lock screen. With the Accessibility Keyboard turned on, you can wake the Mac
+and type your password by touch, without a mouse or keyboard attached. Turn off the keyboard's fade
+first; see [Troubleshooting](#troubleshooting).
+
 Reading the controller needs Input Monitoring; posting events needs Accessibility.
 
 ## Alternatives
