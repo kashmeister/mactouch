@@ -40,6 +40,9 @@ CGEvent:
 | Three or four fingers, swipe up/down | Mission Control / App Exposé | same |
 | One finger at a window edge, move | Resize the window | same |
 
+With one-finger scroll, a ring appears under the finger when the hold registers and fills over the
+next 0.5 s. Move while it shows to drag; when it is full, the right click fires.
+
 A tap clicks on lift, at the point where the finger landed, so a hold can still become a right
 click.
 

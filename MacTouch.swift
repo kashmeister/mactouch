@@ -322,7 +322,56 @@ func declareUserActivity() {
 func endGesture() {   // release anything held, e.g. when pausing or the controller goes away
     if case .dragging = mode { post(.leftMouseUp, shifted(lastPt)) }
     mode = .idle
+    holdRing.hide()
 }
+
+// Hold cue for one-finger scroll: once a hold registers, a ring under the finger fills over
+// heldRightClickSecs. Moving while it shows drags; when it is full, the right click fires.
+final class HoldRing {
+    let size: CGFloat = 120   // wider than a fingertip, so the ring stays visible around it
+    var window: NSWindow?
+    let track = CAShapeLayer(), progress = CAShapeLayer()
+
+    func show(at p: CGPoint, duration: Double) {
+        let w = window ?? make()
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0   // CG is top-down, Cocoa bottom-up
+        w.setFrame(NSRect(x: p.x - size / 2, y: primaryHeight - p.y - size / 2, width: size, height: size), display: false)
+        let fill = CABasicAnimation(keyPath: "strokeEnd")
+        fill.fromValue = 0; fill.toValue = 1; fill.duration = duration
+        progress.removeAllAnimations()
+        progress.strokeEnd = 1
+        progress.add(fill, forKey: "fill")
+        w.orderFrontRegardless()
+    }
+
+    func hide() { window?.orderOut(nil) }
+
+    private func make() -> NSWindow {
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: size, height: size), styleMask: .borderless,
+                         backing: .buffered, defer: false)
+        w.isOpaque = false; w.backgroundColor = .clear; w.hasShadow = false; w.ignoresMouseEvents = true
+        w.level = .screenSaver
+        w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: size, height: size))
+        v.wantsLayer = true
+        let path = CGMutablePath()   // from 12 o'clock, clockwise
+        path.addArc(center: CGPoint(x: size / 2, y: size / 2), radius: size / 2 - 10,
+                    startAngle: .pi / 2, endAngle: .pi / 2 - 2 * .pi, clockwise: true)
+        for (layer, color, width) in [(track, NSColor(white: 0, alpha: 0.35), 9.0), (progress, NSColor.white, 5.0)] {
+            layer.path = path
+            layer.fillColor = nil
+            layer.strokeColor = color.cgColor
+            layer.lineWidth = width
+            layer.lineCap = .round
+            layer.contentsScale = NSScreen.screens.map(\.backingScaleFactor).max() ?? 2
+            v.layer?.addSublayer(layer)
+        }
+        w.contentView = v
+        window = w
+        return w
+    }
+}
+let holdRing = HoldRing()
 
 func scroll(_ dx: Double, _ dy: Double) {
     let dir = cfg.invertScroll ? -1.0 : 1.0
@@ -413,7 +462,10 @@ func commit() {
     let fracs = slots.sorted { $0.key < $1.key }.filter { $0.value.tip }.map { frac($0.value) }
     let active = fracs.map(toScreen)
     let n = active.count
-    defer { lastN = n; if n == 1 { lastPt = active[0] } }
+    defer {
+        lastN = n; if n == 1 { lastPt = active[0] }
+        if case .held = mode {} else { holdRing.hide() }
+    }
     if calibrator.active { calibrator.feed(fracs); return }
     if probe {
         if n != lastN || n > 0 { log("contacts=\(n) " + active.map { "\(Int($0.x)),\(Int($0.y))" }.joined(separator: " ")) }
@@ -460,10 +512,11 @@ func commit() {
                 guard case .pending(let s, let q) = mode, q == seq, !inDragApp else { return }
                 if cfg.oneFingerScroll {
                     mode = .held(s); log("hold at \(Int(s.x)),\(Int(s.y))")
+                    holdRing.show(at: s, duration: heldRightClickSecs)
                     // Still holding without moving: right click now rather than waiting for the lift.
                     DispatchQueue.main.asyncAfter(deadline: .now() + heldRightClickSecs) {
                         guard case .held(let h) = mode, pressSeq == seq else { return }
-                        rightClick(h, "long press"); mode = .done
+                        holdRing.hide(); rightClick(h, "long press"); mode = .done
                     }
                 } else { rightClick(s, "long press"); mode = .done }
             }
