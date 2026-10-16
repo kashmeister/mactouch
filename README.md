@@ -42,7 +42,7 @@ CGEvent:
 
 With one-finger scroll, a ring appears under the finger when the hold registers and fills over the
 next 0.5 s. Move while it shows to drag; when it is full, the right click fires. Its colour is set
-under **Hold Ring Color** in the menu; the default is BMW instrument-cluster orange.
+under **Hold Ring Color** in the menu; the default is a warm gauge orange.
 
 A tap clicks on lift, at the point where the finger landed, so a hold can still become a right
 click.

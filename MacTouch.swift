@@ -35,7 +35,7 @@
 //   --edge=12               touches this close to a window's side, bottom or top edge resize it (0 = off)
 //   --swipes=3|4|off        multi-finger swipes with three or four fingers, four only, or off
 //   --keep-keyboard         put the Accessibility Keyboard back where it was after the display sleeps (default on)
-//   --ring-color=#FF6A00    hold cue ring colour: #RRGGBB or "accent" (default BMW instrument-cluster orange)
+//   --ring-color=#FF6A00    hold cue ring colour: #RRGGBB or "accent" (default gauge orange)
 import AppKit
 import IOKit
 import IOKit.hid
@@ -994,7 +994,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func ringColors(_ menu: NSMenu) {
-        let presets = [("BMW Orange", "#FF6A00"), ("Amber", "#FFB000"), ("White", "#FFFFFF"),
+        let presets = [("Gauge Orange", "#FF6A00"), ("Amber", "#FFB000"), ("White", "#FFFFFF"),
                        ("Green", "#34C759"), ("Red", "#FF3B30"), ("Accent Color", "accent")]
         let sub = NSMenu(); sub.autoenablesItems = false
         for (label, v) in presets {
