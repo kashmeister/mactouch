@@ -173,36 +173,59 @@ first line of the menu says which.
 | Multi-Finger Swipes | Three or four fingers, four only, or off |
 | Resize Windows at Edges | Drags that start at a window edge resize it |
 | Drag Apps, Zoom-Key Apps | Lists of apps with special handling. **Add …** adds the app that was in front when the menu opened; click an app to remove it |
-| Piano… | Open piano mode; its settings are in the bar above the keys |
+| Music… | Open music mode: piano, drums, strum, theremin and loops; settings are in its bar |
+| Whiteboard…, Draw on Screen… | Draw with your fingers on a board or over the screen |
 | Calibrate Touch… | Run the calibration wizard |
 | Undo Calibration | Switch back to the calibration before the last change; choose it again to redo |
 | Reset Calibration | Go back to an uncalibrated mapping; Undo restores the calibration |
 | Open Log | Open `~/Library/Logs/MacTouch.log` |
 | Quit MacTouch | Quit until the next login |
 
-### Piano mode
+### Music
 
-**Piano…** in the menu opens a full-screen keyboard on the touch display. While it is open, touches
-bypass mouse emulation: every finger plays its own note, so chords and both hands work, and sliding
-a finger across the keys plays each one. Every note plays at the same volume; the glass cannot sense
-pressure, so with **Dynamics** on, the front of a key, at the bottom of the screen, plays louder than
-the back instead.
+**Music…** in the menu opens a full-screen instrument on the touch display. While it is open,
+touches bypass mouse emulation and every finger plays on its own. The bar above the instrument
+switches between four instruments and holds their settings:
 
-All controls are in the bar above the keys:
+| Instrument | How to play | Settings in the bar |
+|---|---|---|
+| **Piano** | Chords and both hands; slide across keys to play each one | ◀ ▶ octave shift, 1–6 octaves, Dynamics, sound (Grand Piano, Electric Piano, Harpsichord, Vibraphone, Organ, Strings, Choir), Sustain |
+| **Drums** | 16 pads: kick, snare, clap, rim, hi-hats, crash, toms, ride, ride bell, tambourine, cowbell, shaker | Dynamics |
+| **Strum** | Omnichord-style: tap a chord (12 roots in circle-of-fifths order × major, minor, 7th), then swipe across the strum plate; every string you cross sounds | Sound (Harp, Nylon Guitar, Steel Guitar, Music Box, Kalimba) |
+| **Theremin** | Left–right is pitch over three octaves (C3–C6), up–down is volume; each finger is its own voice | Wave (Sine, Triangle, Saw), Snap to notes |
+
+Notes play at a fixed volume. The glass cannot sense pressure, so with **Dynamics** on, the front of
+a key or pad, lower on the screen, plays louder instead.
+
+On the right of the bar:
 
 | Control | Effect |
 |---|---|
-| ◀ ▶ | Shift the keyboard down or up an octave; the range is shown next to them |
-| *n* octaves | Cycle the keyboard size from 1 to 6 octaves; the default 3 gives 22 white keys |
-| Dynamics | Louder toward the front of each key; off by default |
-| ♪ sound | Cycle through Grand Piano, Electric Piano, Harpsichord, Vibraphone, Organ, Strings and Choir |
-| Sustain | Latch the sustain pedal |
-| Loop | Tap to arm, then play: recording starts on your first note. Tap again to loop what you played, and keep playing over it. Tap to stop or restart the loop; ✕ clears it |
-| Done, or Esc | Close the piano |
+| Loop slots ○1–○4 | Tap an empty slot to arm it (●), then play: recording starts on your first note. Tap again to loop it (▶) and play over it. Tap to stop (‖) or restart. **Hold 0.7 s to clear.** |
+| ♩ Metronome | Tap to cycle off, 80, 100, 120, 140 bpm |
+| Save MIDI | Save every loop as a track of a MIDI file in `~/Music/MacTouch` |
+| Done, or Esc | Close |
 
-Keys you press light up in the hold ring colour; keys the loop plays light up paler. The sounds are the General MIDI set that ships with macOS. MacTouch also appears as a MIDI
-source named **MacTouch Piano**, so GarageBand, Logic or any synth can play the notes with better
-instruments.
+The first loop sets the cycle; with the metronome on, it starts on the nearest beat and is rounded to
+whole beats. Later loops line up with the cycle they were started in and last a whole number of
+cycles, so all loops stay in step. Loops record piano, drums and strum, not the theremin.
+
+Keys and pads you play light up in the hold ring colour; notes from loops light up paler. The sounds
+are the General MIDI set that ships with macOS. Piano, strum and drums also go out on a MIDI source
+named **MacTouch Piano** (channels 1, 2 and 10), so GarageBand, Logic or any synth can play them with
+better instruments.
+
+### Whiteboard and Draw on Screen
+
+**Whiteboard…** opens a full-screen board; **Draw on Screen…** puts a transparent layer over
+everything. Each finger draws its own line. The bar has seven pen colours (Orange follows the hold
+ring colour), line thickness, an eraser that removes the lines it touches, Undo, Clear (hold 0.7 s),
+and Done.
+
+- The whiteboard can be dark or light and is saved with **Save PNG** to `~/Pictures/MacTouch`, and
+  copied to the clipboard.
+- On screen, **Drawing / Using Mac** switches touches between drawing and working the Mac as usual,
+  with the drawing left in place. The bar floats at the top centre and always responds to touch.
 
 ### Calibration
 
@@ -292,8 +315,8 @@ switches take `=false` to turn them off.
 | `--titlebar=` | `44` | Height in points of the drag zone at the top of each window; `0` turns it off |
 | `--edge=` | `12` | Distance in points from a window edge within which a drag resizes; `0` turns it off |
 | `--ring-color=` | `#FF6A00` | Hold cue ring colour, `#RRGGBB` or `accent` |
-| `--piano-octaves=` | `3` | Piano mode keyboard size, 1 to 6 octaves |
-| `--piano-sound=` | `0` | Piano mode General MIDI program; the menu lists the built-in choices |
+| `--piano-octaves=` | `3` | Music piano size, 1 to 6 octaves |
+| `--piano-sound=` | `0` | Music piano General MIDI program; the bar lists the built-in choices |
 | `--auto-keyboard` | on | Expand the minimized Accessibility Keyboard for text fields focused by touch |
 | `--keep-keyboard` | on | Restore the Accessibility Keyboard's position after display sleep |
 | `--swipes=` | `3` | Multi-finger swipes with three or four fingers (`3`), four only (`4`), or `off` |

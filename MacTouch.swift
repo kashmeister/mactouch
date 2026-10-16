@@ -500,6 +500,14 @@ func commit() {
         piano.feed(Dictionary(uniqueKeysWithValues: slots.filter { $0.value.tip }.map { ($0.key, toScreen(frac($0.value))) }))
         return
     }
+    if sketch.active {   // a gesture is drawn if it starts while drawing, or on the drawing's bar
+        if n > 0 && lastN == 0 { sketch.capturing = !sketch.overlay || sketch.drawing || sketch.onBar(active[0]) }
+        if sketch.capturing || sketch.hasFingers {
+            sketch.feed(Dictionary(uniqueKeysWithValues: slots.filter { $0.value.tip }.map { ($0.key, toScreen(frac($0.value))) }))
+            if n == 0 { sketch.capturing = false }
+            return
+        }
+    }
     if probe {
         if n != lastN || n > 0 { log("contacts=\(n) " + active.map { "\(Int($0.x)),\(Int($0.y))" }.joined(separator: " ")) }
         return
@@ -745,7 +753,7 @@ func clickKeyboard(_ r: CGRect) {
 }
 
 func autoKeyboardTick() {
-    guard cfg.autoKeyboard, !cfg.paused, AXIsProcessTrusted(), !screenLocked, !piano.active, !calibrator.active,
+    guard cfg.autoKeyboard, !cfg.paused, AXIsProcessTrusted(), !screenLocked, !piano.active, !calibrator.active, !(sketch.active && !sketch.overlay),
           let editable = focusIsEditable() else { return }
     defer { wasEditable = editable }
     if editable {
@@ -1689,6 +1697,225 @@ final class Piano: NSObject {
 }
 let piano = Piano()
 
+// MARK: whiteboard and drawing on screen
+
+// Finger drawing, one stroke per finger. The whiteboard is a full-screen board (dark or light) that
+// can be saved as a PNG; drawing on screen is a transparent layer over everything, with a floating
+// bar. In its Use mode, touches outside the bar work the Mac as usual while the drawing stays visible.
+let penColors: [(name: String, spec: String)] = [
+    ("Black", "#1C1C1E"), ("White", "#FFFFFF"), ("Red", "#FF3B30"), ("Orange", "ring"),
+    ("Yellow", "#FFD60A"), ("Green", "#34C759"), ("Blue", "#0A84FF"),
+]
+let penWidths: [CGFloat] = [3, 7, 14]
+
+struct Stroke { var id: Int, points: [CGPoint], color: NSColor, width: CGFloat }
+enum SketchTool: Equatable { case pen(Int), size, eraser, undo, board, use, clear, save, done }
+
+final class SketchView: NSView {
+    weak var owner: Sketch?
+    var hideBar = false   // while rendering the PNG
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with e: NSEvent) { if e.keyCode == 53 { owner?.close() } }   // Esc
+
+    func items() -> [(rect: NSRect, tool: SketchTool, title: String, on: Bool, swatch: NSColor?)] {
+        guard let o = owner else { return [] }
+        var list: [(NSRect, SketchTool, String, Bool, NSColor?)] = []
+        var x: CGFloat = 0
+        func add(_ w: CGFloat, _ t: SketchTool, _ title: String, on: Bool = false, swatch: NSColor? = nil) {
+            list.append((NSRect(x: x, y: 4, width: w, height: 36), t, title, on, swatch)); x += w + 8
+        }
+        for i in penColors.indices { add(44, .pen(i), "", on: o.pen == i && !o.eraser, swatch: o.penColor(i)) }
+        x += 8
+        add(96, .size, ["Thin", "Medium", "Thick"][o.size])
+        add(96, .eraser, "Eraser", on: o.eraser)
+        add(80, .undo, "Undo")
+        if o.overlay { add(96, .use, o.drawing ? "Drawing" : "Using Mac", on: o.drawing) } else { add(96, .board, o.light ? "Light" : "Dark") }
+        add(140, .clear, o.clearHint > now() ? "Hold to clear" : "Clear")
+        if !o.overlay { add(110, .save, o.savedUntil > now() ? "Saved ✓" : "Save PNG") }
+        add(90, .done, "Done")
+        // The whiteboard's bar spans the top; the overlay's floats, centred, at the top.
+        let width = x - 8, left = o.overlay ? (bounds.width - width) / 2 : 8
+        return list.map { (NSRect(x: $0.0.minX + left, y: $0.0.minY + (o.overlay ? 8 : 0), width: $0.0.width, height: $0.0.height), $0.1, $0.2, $0.3, $0.4) }
+    }
+
+    var barRect: NSRect {
+        let it = items()
+        guard let first = it.first, let last = it.last else { return .zero }
+        return owner?.overlay == true ? NSRect(x: first.rect.minX - 10, y: 2, width: last.rect.maxX - first.rect.minX + 20, height: 52)
+                                      : NSRect(x: 0, y: 0, width: bounds.width, height: 44)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let o = owner else { return }
+        if !o.overlay { (o.light ? NSColor(white: 0.97, alpha: 1) : NSColor(white: 0.1, alpha: 1)).setFill(); bounds.fill() }
+        for s in o.strokes {
+            s.color.setStroke()
+            let path = NSBezierPath()
+            path.lineWidth = s.width; path.lineCapStyle = .round; path.lineJoinStyle = .round
+            path.move(to: s.points[0])
+            if s.points.count == 1 { path.line(to: CGPoint(x: s.points[0].x + 0.1, y: s.points[0].y)) }
+            for p in s.points.dropFirst() { path.line(to: p) }
+            path.stroke()
+        }
+        for p in o.eraserPoints.values {
+            NSColor(white: 0.5, alpha: 0.8).setStroke()
+            let c = NSBezierPath(ovalIn: NSRect(x: p.x - o.eraserRadius, y: p.y - o.eraserRadius, width: 2 * o.eraserRadius, height: 2 * o.eraserRadius))
+            c.lineWidth = 2; c.stroke()
+        }
+        guard !hideBar else { return }
+        NSColor(white: 0.12, alpha: o.overlay ? 0.88 : 1).setFill()
+        NSBezierPath(roundedRect: barRect, xRadius: o.overlay ? 14 : 0, yRadius: o.overlay ? 14 : 0).fill()
+        for it in items() {
+            if let sw = it.swatch {
+                sw.setFill(); NSBezierPath(ovalIn: it.rect.insetBy(dx: 6, dy: 2)).fill()
+                if it.on { color(cfg.ringColor).setStroke(); let r = NSBezierPath(ovalIn: it.rect.insetBy(dx: 2, dy: -2)); r.lineWidth = 3; r.stroke() }
+                continue
+            }
+            (it.on ? color(cfg.ringColor) : NSColor(white: 0.26, alpha: 1)).setFill()
+            NSBezierPath(roundedRect: it.rect, xRadius: 8, yRadius: 8).fill()
+            let para = NSMutableParagraphStyle(); para.alignment = .center
+            let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 16, weight: .medium),
+                                                        .foregroundColor: it.on ? NSColor.black : NSColor.white, .paragraphStyle: para]
+            let h = (it.title as NSString).size(withAttributes: attrs).height
+            (it.title as NSString).draw(in: NSRect(x: it.rect.minX, y: it.rect.midY - h / 2, width: it.rect.width, height: h), withAttributes: attrs)
+        }
+    }
+}
+
+final class Sketch: NSObject {
+    var window: NSWindow?, view: SketchView?, redraw: Timer?
+    var active: Bool { window != nil }
+    var overlay = false, drawing = true, light = false, capturing = false
+    var pen = 1, size = 1, eraser = false
+    var strokes: [Stroke] = [], nextID = 0
+    var fingers: [Int: Int] = [:]          // finger -> stroke id; -1 on the bar, -2 erasing
+    var eraserPoints: [Int: CGPoint] = [:]
+    var clearFinger: Int?, clearHint = 0.0, savedUntil = 0.0
+    let eraserRadius: CGFloat = 26
+    var hasFingers: Bool { !fingers.isEmpty }
+
+    func penColor(_ i: Int) -> NSColor { penColors[i].spec == "ring" ? color(cfg.ringColor) : color(penColors[i].spec) }
+
+    func open(overlay o: Bool) {
+        guard window == nil, let s = screen(for: targetDisplay()) ?? NSScreen.main else { return }
+        endGesture()
+        overlay = o; drawing = true; eraser = false; strokes = []; fingers = [:]; eraserPoints = [:]
+        pen = o ? 2 : (light ? 0 : 1)   // red over the screen; black or white on the board
+        let w = CalibrationWindow(contentRect: s.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        w.level = .screenSaver
+        w.isOpaque = !o
+        w.backgroundColor = o ? .clear : .black
+        w.ignoresMouseEvents = o   // Use mode: clicks go to the apps underneath
+        w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        let v = SketchView(frame: NSRect(origin: .zero, size: s.frame.size))
+        v.owner = self
+        w.contentView = v
+        w.setFrame(s.frame, display: true)
+        window = w; view = v
+        if o { w.orderFrontRegardless() } else {
+            NSApp.activate(ignoringOtherApps: true)
+            w.makeKeyAndOrderFront(nil); w.makeFirstResponder(v)
+        }
+        redraw = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            if self.clearHint > now() - 0.5 || self.savedUntil > now() - 0.5 { self.view?.needsDisplay = true }
+        }
+        log(o ? "drawing on screen" : "whiteboard open")
+    }
+
+    func close() {
+        redraw?.invalidate(); redraw = nil
+        window?.orderOut(nil)
+        window = nil; view = nil; fingers = [:]; capturing = false
+        log("drawing closed")
+    }
+
+    func local(_ g: CGPoint) -> CGPoint {
+        guard let w = window else { return g }
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return CGPoint(x: g.x - w.frame.minX, y: g.y - (primaryHeight - w.frame.minY - w.frame.height))
+    }
+    func onBar(_ g: CGPoint) -> Bool { view?.barRect.contains(local(g)) ?? false }
+
+    // Called once per HID report while capturing, with every touching finger: slot -> global point.
+    func feed(_ touches: [Int: CGPoint]) {
+        guard let v = view else { return }
+        for (f, g) in touches {
+            let p = local(g)
+            if let id = fingers[f] {
+                if id == -2 { erase(at: p); eraserPoints[f] = p }
+                else if id >= 0, let i = strokes.lastIndex(where: { $0.id == id }) { strokes[i].points.append(p) }
+                continue
+            }
+            declareUserActivity()
+            if v.barRect.contains(p) {
+                fingers[f] = -1
+                if let it = v.items().first(where: { $0.rect.contains(p) }) { if !barTool(it.tool, f) { return } }
+            } else if eraser {
+                fingers[f] = -2; eraserPoints[f] = p; erase(at: p)
+            } else {
+                strokes.append(Stroke(id: nextID, points: [p], color: penColor(pen), width: penWidths[size]))
+                fingers[f] = nextID; nextID += 1
+            }
+        }
+        for f in fingers.keys where touches[f] == nil {
+            fingers[f] = nil; eraserPoints[f] = nil
+            if clearFinger == f { clearFinger = nil; clearHint = now() + 1.5 }   // lifted before the hold finished
+        }
+        v.needsDisplay = true
+    }
+
+    func erase(at p: CGPoint) {
+        let r2 = eraserRadius * eraserRadius
+        strokes.removeAll { s in s.points.contains { ($0.x - p.x) * ($0.x - p.x) + ($0.y - p.y) * ($0.y - p.y) < r2 } }
+    }
+
+    func barTool(_ t: SketchTool, _ finger: Int) -> Bool {
+        switch t {
+        case .pen(let i): pen = i; eraser = false
+        case .size: size = (size + 1) % penWidths.count
+        case .eraser: eraser.toggle()
+        case .undo:
+            let drawingIDs = Set(fingers.values)
+            if let i = strokes.lastIndex(where: { !drawingIDs.contains($0.id) }) { strokes.remove(at: i) }
+        case .board: light.toggle(); if pen <= 1 { pen = light ? 0 : 1 }
+        case .use: drawing.toggle()
+        case .clear:   // hold 0.7 s, so a stray touch can't wipe the drawing
+            clearFinger = finger
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+                guard let self, self.clearFinger == finger else { return }
+                self.clearFinger = nil; self.strokes.removeAll(); self.view?.needsDisplay = true
+            }
+        case .save: savePNG()
+        case .done: close(); mode = .done; return false   // ignore the fingers still down
+        }
+        return true
+    }
+
+    // The board without its bar, to ~/Pictures/MacTouch and the clipboard.
+    func savePNG() {
+        guard let v = view else { return }
+        v.hideBar = true
+        defer { v.hideBar = false; v.needsDisplay = true }
+        guard let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return }
+        v.cacheDisplay(in: v.bounds, to: rep)
+        guard let png = rep.representation(using: .png, properties: [:]) else { return }
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Pictures/MacTouch")
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH.mm.ss"
+        let url = dir.appendingPathComponent("Whiteboard \(f.string(from: Date())).png")
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try png.write(to: url)
+            let image = NSImage(size: v.bounds.size); image.addRepresentation(rep)
+            NSPasteboard.general.clearContents(); NSPasteboard.general.writeObjects([image])
+            savedUntil = now() + 2
+            log("whiteboard saved to \(url.path) and copied")
+        } catch { log("saving whiteboard failed: \(error)") }
+    }
+}
+let sketch = Sketch()
+
 // MARK: HID input
 
 // The controller reports up to 10 contacts, each in its own Finger collection (0x0D/0x22) holding
@@ -1858,7 +2085,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appList(menu, "Drag Apps", "dragApps", cfg.dragApps, "In these apps one finger always drags.")
         appList(menu, "Zoom-Key Apps", "zoomKeyApps", cfg.zoomKeyApps, "In these apps pinch sends ⌘+ / ⌘−.")
         menu.addItem(.separator())
-        add(menu, piano.active ? "Close Music" : "Music…", #selector(togglePiano(_:)), enabled: hidOpen && !touchDevices().isEmpty)
+        let canTouch = hidOpen && !touchDevices().isEmpty
+        add(menu, piano.active ? "Close Music" : "Music…", #selector(togglePiano(_:)), enabled: canTouch)
+        add(menu, sketch.active && !sketch.overlay ? "Close Whiteboard" : "Whiteboard…", #selector(toggleBoard(_:)), enabled: canTouch)
+        add(menu, sketch.active && sketch.overlay ? "Stop Drawing on Screen" : "Draw on Screen…", #selector(toggleOverlay(_:)), enabled: canTouch)
         menu.addItem(.separator())
         add(menu, "Calibrate Touch…", #selector(calibrate(_:)), enabled: hidOpen && !touchDevices().isEmpty)
         add(menu, "Undo Calibration", #selector(undoCalibration(_:)), enabled: previousCal.map { $0 != cfg.cal } ?? false)
@@ -1942,7 +2172,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setSetting(key, kv[1])
         if key.hasPrefix("piano") { piano.settingsChanged() }
     }
-    @objc func togglePiano(_ s: NSMenuItem) { piano.active ? piano.close() : piano.open() }
+    @objc func togglePiano(_ s: NSMenuItem) {
+        if piano.active { piano.close() } else { if sketch.active { sketch.close() }; piano.open() }
+    }
+    @objc func toggleBoard(_ s: NSMenuItem) { toggleSketch(overlay: false) }
+    @objc func toggleOverlay(_ s: NSMenuItem) { toggleSketch(overlay: true) }
+    func toggleSketch(overlay: Bool) {
+        let same = sketch.active && sketch.overlay == overlay
+        if sketch.active { sketch.close() }
+        if same { return }
+        if piano.active { piano.close() }
+        sketch.open(overlay: overlay)
+    }
     @objc func addApp(_ s: NSMenuItem) {
         guard let kv = s.representedObject as? [String] else { return }
         let list = kv[0] == "dragApps" ? cfg.dragApps : cfg.zoomKeyApps
