@@ -65,7 +65,7 @@ struct Config {
     var flipX = false, flipY = false, swap = false
     var cal: [Double] = [1, 0, 1, 0]
     var oneFingerScroll = false, twoFingerTap = false, invertScroll = false, paused = false, keepKeyboard = true
-    var pianoOctaves = 3, pianoSound = 0, pianoShift = 0
+    var pianoOctaves = 3, pianoSound = 0, pianoShift = 0, pianoDynamics = false
     var hold = 0.6, scrollScale = 1.0, zoomScale = 1.0, titlebar = 44.0
     var zoom = "gesture", swipes = "3", edge = 12.0, ringColor = "#FF6A00"
     var dragApps = ["AssistiveControl"], zoomKeyApps: [String] = []
@@ -140,7 +140,7 @@ func loadConfig() -> Config {
     rd("invertScroll", \.invertScroll); rd("paused", \.paused); rd("keepKeyboard", \.keepKeyboard)
     rd("hold", \.hold); rd("scrollScale", \.scrollScale); rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
     rd("ringColor", \.ringColor); rd("zoom", \.zoom); rd("swipes", \.swipes); rd("edge", \.edge); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
-    rd("pianoOctaves", \.pianoOctaves); rd("pianoSound", \.pianoSound); rd("pianoShift", \.pianoShift)
+    rd("pianoOctaves", \.pianoOctaves); rd("pianoSound", \.pianoSound); rd("pianoShift", \.pianoShift); rd("pianoDynamics", \.pianoDynamics)
     c.pianoOctaves = min(max(c.pianoOctaves, 1), 6); c.pianoSound = min(max(c.pianoSound, 0), 127)
     if c.cal.count != 4 || c.cal[0] == 0 || c.cal[2] == 0 { c.cal = identityCal }
     return c
@@ -824,7 +824,7 @@ let whiteSteps = [0, 2, 4, 5, 7, 9, 11]   // semitones of C D E F G A B
 let noteNames = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
 func noteName(_ n: Int) -> String { noteNames[n % 12] + "\(n / 12 - 1)" }
 
-enum PianoHit: Equatable { case note(Int), down, up, octaves, sound, sustain, loop, clearLoop, done, none }
+enum PianoHit: Equatable { case note(Int), down, up, octaves, dynamics, sound, sustain, loop, clearLoop, done, none }
 
 // Simple looper: arm it, play (recording starts on the first note), tap again to loop what you
 // played while you keep playing over it.
@@ -848,6 +848,7 @@ final class PianoView: NSView {
     var upRect: NSRect { bar(80, 64) }
     var rangeRect: NSRect { bar(152, 170) }
     var octavesRect: NSRect { bar(330, 150) }
+    var dynamicsRect: NSRect { bar(488, 150) }
     var soundRect: NSRect { bar(bounds.midX - 130, 260) }
     var doneRect: NSRect { bar(bounds.maxX - 128, 120) }
     var clearRect: NSRect { bar(doneRect.minX - 72, 64) }
@@ -863,7 +864,7 @@ final class PianoView: NSView {
 
     func hit(_ p: CGPoint) -> PianoHit {
         if p.y < toolbar {
-            for (r, h) in [(downRect, PianoHit.down), (upRect, .up), (octavesRect, .octaves), (soundRect, .sound),
+            for (r, h) in [(downRect, PianoHit.down), (upRect, .up), (octavesRect, .octaves), (dynamicsRect, .dynamics), (soundRect, .sound),
                            (sustainRect, .sustain), (loopRect, .loop), (clearRect, .clearLoop), (doneRect, .done)]
             where r.contains(p) { return h == .clearLoop && !(owner?.hasLoop ?? false) ? .none : h }
             return .none
@@ -899,6 +900,7 @@ final class PianoView: NSView {
         button("◀", downRect); button("▶", upRect)
         label(range, in: rangeRect, size: 17, color: .white)
         button("\(cfg.pianoOctaves) octave\(cfg.pianoOctaves == 1 ? "" : "s")", octavesRect)
+        button("Dynamics", dynamicsRect, on: cfg.pianoDynamics)
         button("♪ " + (pianoSounds.first { $0.program == cfg.pianoSound }?.name ?? "Program \(cfg.pianoSound)"), soundRect)
         button("Sustain", sustainRect, on: o.sustain)
         switch o.loop {
@@ -1091,9 +1093,9 @@ final class Piano: NSObject {
         midi(0xB0, 64, on ? 127 : 0)
     }
 
-    // Front of a key (bottom of the screen) plays louder, like striking it harder.
+    // With Dynamics on, the front of a key (bottom of the screen) plays louder, like striking it harder.
     func velocity(_ p: CGPoint) -> UInt8 {
-        guard let v = view else { return 90 }
+        guard cfg.pianoDynamics, let v = view else { return 100 }
         let f = min(max((p.y - v.keyTop) / (v.bounds.height - v.keyTop), 0), 1)
         return UInt8(45 + 82 * f)
     }
@@ -1126,6 +1128,7 @@ final class Piano: NSObject {
             case .sustain: setSustain(!sustain)
             case .loop: loopTapped()
             case .clearLoop: clearLoop()
+            case .dynamics: setSetting("pianoDynamics", !cfg.pianoDynamics)
             case .octaves:
                 allOff()
                 setSetting("pianoOctaves", cfg.pianoOctaves % 6 + 1)

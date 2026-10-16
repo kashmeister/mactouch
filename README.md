@@ -183,8 +183,9 @@ first line of the menu says which.
 
 **Piano…** in the menu opens a full-screen keyboard on the touch display. While it is open, touches
 bypass mouse emulation: every finger plays its own note, so chords and both hands work, and sliding
-a finger across the keys plays each one. The glass cannot sense pressure, so the front of a key, at
-the bottom of the screen, plays louder than the back.
+a finger across the keys plays each one. Every note plays at the same volume; the glass cannot sense
+pressure, so with **Dynamics** on, the front of a key, at the bottom of the screen, plays louder than
+the back instead.
 
 All controls are in the bar above the keys:
 
@@ -192,6 +193,7 @@ All controls are in the bar above the keys:
 |---|---|
 | ◀ ▶ | Shift the keyboard down or up an octave; the range is shown next to them |
 | *n* octaves | Cycle the keyboard size from 1 to 6 octaves; the default 3 gives 22 white keys |
+| Dynamics | Louder toward the front of each key; off by default |
 | ♪ sound | Cycle through Grand Piano, Electric Piano, Harpsichord, Vibraphone, Organ, Strings and Choir |
 | Sustain | Latch the sustain pedal |
 | Loop | Tap to arm, then play: recording starts on your first note. Tap again to loop what you played, and keep playing over it. Tap to stop or restart the loop; ✕ clears it |
