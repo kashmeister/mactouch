@@ -165,6 +165,7 @@ first line of the menu says which.
 | One-Finger Scroll | iPad-style scrolling, see [How it works](#how-it-works) |
 | Two-Finger Tap Right-Clicks | Two-finger tap as a right click |
 | Invert Scrolling | Reverse both scroll gestures |
+| Auto Keyboard | Expand the minimized Accessibility Keyboard when a tap puts the focus in a text field, and minimize it again after you leave |
 | Keep Keyboard Position | Put the Accessibility Keyboard back where it was after display sleep, wake and unlock |
 | Pinch | Trackpad zoom, ⌘+ / ⌘− keys, or off |
 | Long Press, Scroll Speed | Hold time and scroll speed |
@@ -293,6 +294,7 @@ switches take `=false` to turn them off.
 | `--ring-color=` | `#FF6A00` | Hold cue ring colour, `#RRGGBB` or `accent` |
 | `--piano-octaves=` | `3` | Piano mode keyboard size, 1 to 6 octaves |
 | `--piano-sound=` | `0` | Piano mode General MIDI program; the menu lists the built-in choices |
+| `--auto-keyboard` | on | Expand the minimized Accessibility Keyboard for text fields focused by touch |
 | `--keep-keyboard` | on | Restore the Accessibility Keyboard's position after display sleep |
 | `--swipes=` | `3` | Multi-finger swipes with three or four fingers (`3`), four only (`4`), or `off` |
 

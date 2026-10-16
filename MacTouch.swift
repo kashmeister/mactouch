@@ -34,6 +34,7 @@
 //   --titlebar=44           touches this many points from the top of a normal window drag at once (0 = off)
 //   --edge=12               touches this close to a window's side, bottom or top edge resize it (0 = off)
 //   --swipes=3|4|off        multi-finger swipes with three or four fingers, four only, or off
+//   --auto-keyboard         expand the minimized Accessibility Keyboard when a touch focuses a text field (default on)
 //   --keep-keyboard         put the Accessibility Keyboard back where it was after the display sleeps (default on)
 //   --ring-color=#FF6A00    hold cue ring colour: #RRGGBB or "accent" (default gauge orange)
 //   --piano-octaves=3       piano mode keyboard size (1-6)        --piano-sound=0   General MIDI program
@@ -64,7 +65,7 @@ struct Config {
     var vid = 0x222A, pid = 0, display = "0x2613:0x2023"
     var flipX = false, flipY = false, swap = false
     var cal: [Double] = [1, 0, 1, 0]
-    var oneFingerScroll = false, twoFingerTap = false, invertScroll = false, paused = false, keepKeyboard = true
+    var oneFingerScroll = false, twoFingerTap = false, invertScroll = false, paused = false, keepKeyboard = true, autoKeyboard = true
     var pianoOctaves = 3, pianoSound = 0, pianoShift = 0, pianoDynamics = false
     var hold = 0.6, scrollScale = 1.0, zoomScale = 1.0, titlebar = 44.0
     var zoom = "gesture", swipes = "3", edge = 12.0, ringColor = "#FF6A00"
@@ -82,6 +83,7 @@ let options: [(flag: String, key: String, kind: Kind)] = [
     ("--zoom", "zoom", .zoom), ("--zoom-scale", "zoomScale", .double),
     ("--zoom-key-apps", "zoomKeyApps", .list), ("--drag-apps", "dragApps", .list), ("--titlebar", "titlebar", .double),
     ("--edge", "edge", .double), ("--swipes", "swipes", .swipes), ("--keep-keyboard", "keepKeyboard", .bool),
+    ("--auto-keyboard", "autoKeyboard", .bool),
     ("--ring-color", "ringColor", .color),
     ("--piano-octaves", "pianoOctaves", .int), ("--piano-sound", "pianoSound", .int),
 ]
@@ -140,7 +142,7 @@ func loadConfig() -> Config {
     rd("invertScroll", \.invertScroll); rd("paused", \.paused); rd("keepKeyboard", \.keepKeyboard)
     rd("hold", \.hold); rd("scrollScale", \.scrollScale); rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
     rd("ringColor", \.ringColor); rd("zoom", \.zoom); rd("swipes", \.swipes); rd("edge", \.edge); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
-    rd("pianoOctaves", \.pianoOctaves); rd("pianoSound", \.pianoSound); rd("pianoShift", \.pianoShift); rd("pianoDynamics", \.pianoDynamics)
+    rd("pianoOctaves", \.pianoOctaves); rd("pianoSound", \.pianoSound); rd("pianoShift", \.pianoShift); rd("pianoDynamics", \.pianoDynamics); rd("autoKeyboard", \.autoKeyboard)
     c.pianoOctaves = min(max(c.pianoOctaves, 1), 6); c.pianoSound = min(max(c.pianoSound, 0), 127)
     if c.cal.count != 4 || c.cal[0] == 0 || c.cal[2] == 0 { c.cal = identityCal }
     return c
@@ -303,7 +305,9 @@ func post(_ type: CGEventType, _ p: CGPoint, _ button: CGMouseButton = .left, cl
     e.post(tap: .cghidEventTap)
 }
 
+var lastTouchTap = 0.0
 func tap(_ p: CGPoint) {
+    lastTouchTap = now()
     let t = now()
     clicks = (t - lastTapTime < dblSecs && dist(p, lastTapPt) < dblDist) ? clicks + 1 : 1
     lastTapTime = t; lastTapPt = p
@@ -683,6 +687,75 @@ func restoreKeyboard(_ why: String) {
         var np = CGPoint(x: x, y: y)
         if let pv = AXValueCreate(.cgPoint, &np), AXUIElementSetAttributeValue(p.window, kAXPositionAttribute as CFString, pv) == .success {
             log("moved keyboard panel \(panelKey(p.size)) back to \(Int(x)),\(Int(y)) (\(why))")
+        }
+    }
+}
+
+// MARK: auto keyboard
+
+// When a touch puts the focus in a text field, expand the Accessibility Keyboard from its minimized
+// panel; when the focus leaves text fields, minimize it again, but only if MacTouch expanded it.
+// The panels' buttons have no press action, so they get a click, and the pointer is put back.
+let editableRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
+var wasEditable = false, autoExpanded = false, leftFieldAt = 0.0
+
+func axString(_ e: AXUIElement, _ a: String) -> String {
+    var v: CFTypeRef?
+    return AXUIElementCopyAttributeValue(e, a as CFString, &v) == .success ? v as? String ?? "" : ""
+}
+
+func focusIsEditable() -> Bool? {   // nil: focus is on the keyboard itself, so nothing changed
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &v) == .success
+    else { return false }
+    let e = v as! AXUIElement
+    var pid: pid_t = 0
+    AXUIElementGetPid(e, &pid)
+    if NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == keyboardBundleID { return nil }
+    return editableRoles.contains(axString(e, kAXRoleAttribute))
+}
+
+// Frame of the keyboard button titled "Keyboard" (minimized panel) or "Minimize" (full panel).
+func keyboardButton(_ title: String) -> CGRect? {
+    func find(_ e: AXUIElement, _ depth: Int) -> AXUIElement? {
+        if axString(e, kAXRoleAttribute) == "AXButton" && axString(e, kAXTitleAttribute) == title { return e }
+        var v: CFTypeRef?
+        guard depth < 3, AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &v) == .success,
+              let kids = v as? [AXUIElement] else { return nil }
+        for k in kids { if let f = find(k, depth + 1) { return f } }
+        return nil
+    }
+    for p in keyboardPanels() {
+        guard let b = find(p.window, 0) else { continue }
+        var pv: CFTypeRef?, sv: CFTypeRef?
+        var o = CGPoint.zero, sz = CGSize.zero
+        if AXUIElementCopyAttributeValue(b, kAXPositionAttribute as CFString, &pv) == .success { AXValueGetValue(pv as! AXValue, .cgPoint, &o) }
+        if AXUIElementCopyAttributeValue(b, kAXSizeAttribute as CFString, &sv) == .success { AXValueGetValue(sv as! AXValue, .cgSize, &sz) }
+        return CGRect(origin: o, size: sz)
+    }
+    return nil
+}
+
+func clickKeyboard(_ r: CGRect) {
+    let back = CGEvent(source: nil)?.location ?? .zero, p = CGPoint(x: r.midX, y: r.midY)
+    post(.mouseMoved, p); post(.leftMouseDown, p); post(.leftMouseUp, p); post(.mouseMoved, back)
+}
+
+func autoKeyboardTick() {
+    guard cfg.autoKeyboard, !cfg.paused, AXIsProcessTrusted(), !screenLocked, !piano.active, !calibrator.active,
+          let editable = focusIsEditable() else { return }
+    defer { wasEditable = editable }
+    if editable {
+        leftFieldAt = 0
+        // Only when a touch moved the focus: with a hardware keyboard nobody wants the panel popping up.
+        if !wasEditable && now() - lastTouchTap < 2, let b = keyboardButton("Keyboard") {
+            clickKeyboard(b); autoExpanded = true; log("auto keyboard: expanded")
+        }
+    } else if autoExpanded {
+        if keyboardButton("Keyboard") != nil { autoExpanded = false; return }   // minimized by hand
+        if leftFieldAt == 0 { leftFieldAt = now() }
+        if now() - leftFieldAt > 1.5, let b = keyboardButton("Minimize") {
+            clickKeyboard(b); autoExpanded = false; log("auto keyboard: minimized")
         }
     }
 }
@@ -1228,6 +1301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         scheduleRestore([2], "launch")
         Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in rememberKeyboard() }
+        Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in autoKeyboardTick() }
         updateIcon()
     }
 
@@ -1303,6 +1377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(menu, "Two-Finger Tap Right-Clicks", #selector(toggle(_:)), on: cfg.twoFingerTap, obj: "twoFingerTap")
         add(menu, "Invert Scrolling", #selector(toggle(_:)), on: cfg.invertScroll, obj: "invertScroll")
         add(menu, "Keep Keyboard Position", #selector(toggle(_:)), on: cfg.keepKeyboard, obj: "keepKeyboard")
+        add(menu, "Auto Keyboard", #selector(toggle(_:)), on: cfg.autoKeyboard, obj: "autoKeyboard")
         choices(menu, "Pinch", "zoom", cfg.zoom, [("Trackpad Zoom", "gesture"), ("⌘+ / ⌘− Keys", "keys"), ("Off", "off")])
         choices(menu, "Long Press", "hold", cfg.hold, [0.4, 0.5, 0.6, 0.8, 1.0].map { (String(format: "%.1f s", $0), $0) })
         ringColors(menu)
@@ -1380,6 +1455,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "twoFingerTap": return cfg.twoFingerTap
         case "invertScroll": return cfg.invertScroll
         case "keepKeyboard": return cfg.keepKeyboard
+        case "autoKeyboard": return cfg.autoKeyboard
         default: return false
         }
     }
