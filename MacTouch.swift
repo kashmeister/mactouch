@@ -36,11 +36,14 @@
 //   --swipes=3|4|off        multi-finger swipes with three or four fingers, four only, or off
 //   --keep-keyboard         put the Accessibility Keyboard back where it was after the display sleeps (default on)
 //   --ring-color=#FF6A00    hold cue ring colour: #RRGGBB or "accent" (default gauge orange)
+//   --piano-octaves=3       piano mode keyboard size (1-6)        --piano-sound=0   General MIDI program
 import AppKit
 import IOKit
 import IOKit.hid
 import IOKit.pwr_mgt
 import ApplicationServices
+import AVFoundation
+import CoreMIDI
 
 setvbuf(stdout, nil, _IOLBF, 0)
 
@@ -62,6 +65,7 @@ struct Config {
     var flipX = false, flipY = false, swap = false
     var cal: [Double] = [1, 0, 1, 0]
     var oneFingerScroll = false, twoFingerTap = false, invertScroll = false, paused = false, keepKeyboard = true
+    var pianoOctaves = 3, pianoSound = 0, pianoShift = 0
     var hold = 0.6, scrollScale = 1.0, zoomScale = 1.0, titlebar = 44.0
     var zoom = "gesture", swipes = "3", edge = 12.0, ringColor = "#FF6A00"
     var dragApps = ["AssistiveControl"], zoomKeyApps: [String] = []
@@ -79,6 +83,7 @@ let options: [(flag: String, key: String, kind: Kind)] = [
     ("--zoom-key-apps", "zoomKeyApps", .list), ("--drag-apps", "dragApps", .list), ("--titlebar", "titlebar", .double),
     ("--edge", "edge", .double), ("--swipes", "swipes", .swipes), ("--keep-keyboard", "keepKeyboard", .bool),
     ("--ring-color", "ringColor", .color),
+    ("--piano-octaves", "pianoOctaves", .int), ("--piano-sound", "pianoSound", .int),
 ]
 let actionFlags: Set<String> = ["--check", "--save", "--reset", "--probe", "--raw"]
 
@@ -135,6 +140,8 @@ func loadConfig() -> Config {
     rd("invertScroll", \.invertScroll); rd("paused", \.paused); rd("keepKeyboard", \.keepKeyboard)
     rd("hold", \.hold); rd("scrollScale", \.scrollScale); rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
     rd("ringColor", \.ringColor); rd("zoom", \.zoom); rd("swipes", \.swipes); rd("edge", \.edge); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
+    rd("pianoOctaves", \.pianoOctaves); rd("pianoSound", \.pianoSound); rd("pianoShift", \.pianoShift)
+    c.pianoOctaves = min(max(c.pianoOctaves, 1), 6); c.pianoSound = min(max(c.pianoSound, 0), 127)
     if c.cal.count != 4 || c.cal[0] == 0 || c.cal[2] == 0 { c.cal = identityCal }
     return c
 }
@@ -482,6 +489,10 @@ func commit() {
         if case .held = mode {} else { holdRing.hide() }
     }
     if calibrator.active { calibrator.feed(fracs); return }
+    if piano.active {
+        piano.feed(Dictionary(uniqueKeysWithValues: slots.filter { $0.value.tip }.map { ($0.key, toScreen(frac($0.value))) }))
+        return
+    }
     if probe {
         if n != lastN || n > 0 { log("contacts=\(n) " + active.map { "\(Int($0.x)),\(Int($0.y))" }.joined(separator: " ")) }
         return
@@ -799,6 +810,251 @@ final class Calibrator: NSObject {
 }
 let calibrator = Calibrator()
 
+// MARK: piano mode
+
+// A full-screen keyboard on the touch display. While it is open, touches bypass mouse emulation:
+// every finger plays its own note (chords, both hands, glissando when a finger slides), through
+// the General MIDI sounds that ship with macOS and a virtual MIDI source for other apps.
+let pianoSounds: [(name: String, program: Int)] = [
+    ("Grand Piano", 0), ("Electric Piano", 4), ("Harpsichord", 6), ("Vibraphone", 11),
+    ("Organ", 16), ("Strings", 48), ("Choir", 52),
+]
+let soundBank = URL(fileURLWithPath: "/System/Library/Components/CoreAudio.component/Contents/Resources/gs_instruments.dls")
+let whiteSteps = [0, 2, 4, 5, 7, 9, 11]   // semitones of C D E F G A B
+let noteNames = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
+func noteName(_ n: Int) -> String { noteNames[n % 12] + "\(n / 12 - 1)" }
+
+enum PianoHit: Equatable { case note(Int), down, up, sound, sustain, done, none }
+
+final class PianoView: NSView {
+    weak var owner: Piano?
+    let toolbar: CGFloat = 44
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with e: NSEvent) { if e.keyCode == 53 { owner?.close() } }   // Esc
+
+    var whiteCount: Int { 7 * cfg.pianoOctaves + 1 }   // ends on a C
+    var whiteWidth: CGFloat { bounds.width / CGFloat(whiteCount) }
+    var keyTop: CGFloat { toolbar }
+    var blackHeight: CGFloat { (bounds.height - toolbar) * 0.62 }
+
+    // Toolbar buttons
+    var downRect: NSRect { NSRect(x: 8, y: 4, width: 64, height: toolbar - 8) }
+    var upRect: NSRect { NSRect(x: 80, y: 4, width: 64, height: toolbar - 8) }
+    var soundRect: NSRect { NSRect(x: bounds.midX - 130, y: 4, width: 260, height: toolbar - 8) }
+    var sustainRect: NSRect { NSRect(x: bounds.maxX - 260, y: 4, width: 120, height: toolbar - 8) }
+    var doneRect: NSRect { NSRect(x: bounds.maxX - 128, y: 4, width: 120, height: toolbar - 8) }
+
+    func whiteNote(_ i: Int) -> Int { (owner?.start ?? 48) + 12 * (i / 7) + whiteSteps[i % 7] }
+    func hasBlack(_ i: Int) -> Bool { [0, 1, 3, 4, 5].contains(i % 7) && i < whiteCount - 1 }
+    func blackRect(_ i: Int) -> NSRect {
+        let w = whiteWidth * 0.6
+        return NSRect(x: CGFloat(i + 1) * whiteWidth - w / 2, y: keyTop, width: w, height: blackHeight)
+    }
+
+    func hit(_ p: CGPoint) -> PianoHit {
+        if p.y < toolbar {
+            for (r, h) in [(downRect, PianoHit.down), (upRect, .up), (soundRect, .sound), (sustainRect, .sustain), (doneRect, .done)]
+            where r.contains(p) { return h }
+            return .none
+        }
+        let i = min(max(Int(p.x / whiteWidth), 0), whiteCount - 1)
+        if p.y < keyTop + blackHeight {   // black keys sit on top of the whites
+            for j in [i - 1, i] where j >= 0 && hasBlack(j) && blackRect(j).contains(p) { return .note(whiteNote(j) + 1) }
+        }
+        return .note(whiteNote(i))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(white: 0.08, alpha: 1).setFill(); bounds.fill()
+        guard let o = owner else { return }
+        let lit = color(cfg.ringColor), keyH = bounds.height - toolbar
+        for i in 0..<whiteCount {
+            let r = NSRect(x: CGFloat(i) * whiteWidth, y: keyTop, width: whiteWidth, height: keyH).insetBy(dx: 1, dy: 0)
+            (o.sounding(whiteNote(i)) ? lit : NSColor(white: 0.96, alpha: 1)).setFill()
+            NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
+            if whiteNote(i) % 12 == 0 {
+                label(noteName(whiteNote(i)), in: NSRect(x: r.minX, y: r.maxY - 30, width: r.width, height: 20),
+                      size: 13, color: NSColor(white: 0.45, alpha: 1))
+            }
+        }
+        for i in 0..<whiteCount where hasBlack(i) {
+            (o.sounding(whiteNote(i) + 1) ? lit.blended(withFraction: 0.35, of: .black)! : NSColor(white: 0.12, alpha: 1)).setFill()
+            NSBezierPath(roundedRect: blackRect(i), xRadius: 3, yRadius: 3).fill()
+        }
+        let range = "\(noteName(o.start)) – \(noteName(o.start + 12 * cfg.pianoOctaves))"
+        button("◀", downRect); button("▶", upRect)
+        label(range, in: NSRect(x: upRect.maxX + 12, y: 4, width: 200, height: toolbar - 8), size: 17, color: .white, align: .left)
+        button("♪ " + (pianoSounds.first { $0.program == cfg.pianoSound }?.name ?? "Program \(cfg.pianoSound)"), soundRect)
+        button("Sustain", sustainRect, on: o.sustain)
+        button("Done", doneRect)
+    }
+
+    func button(_ title: String, _ r: NSRect, on: Bool = false) {
+        (on ? color(cfg.ringColor) : NSColor(white: 0.22, alpha: 1)).setFill()
+        NSBezierPath(roundedRect: r, xRadius: 8, yRadius: 8).fill()
+        label(title, in: r, size: 17, color: on ? .black : .white)
+    }
+
+    func label(_ s: String, in r: NSRect, size: CGFloat, color: NSColor, align: NSTextAlignment = .center) {
+        let para = NSMutableParagraphStyle(); para.alignment = align
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: size, weight: .medium),
+                                                    .foregroundColor: color, .paragraphStyle: para]
+        let h = (s as NSString).size(withAttributes: attrs).height
+        (s as NSString).draw(in: NSRect(x: r.minX, y: r.midY - h / 2, width: r.width, height: h), withAttributes: attrs)
+    }
+}
+
+final class Piano: NSObject {
+    var window: NSWindow?, view: PianoView?
+    var active: Bool { window != nil }
+    let engine = AVAudioEngine(), sampler = AVAudioUnitSampler()
+    var audioReady = false, loadedProgram = -1
+    var midiClient = MIDIClientRef(), midiSource = MIDIEndpointRef()
+    var fingers: [Int: PianoHit] = [:]   // slot -> what that finger is on
+    var counts: [Int: Int] = [:]         // note -> fingers holding it
+    var sustain = false
+    var base: Int { 60 - 12 * (cfg.pianoOctaves / 2) }   // middle C near the centre
+    func startFor(shift: Int) -> Int { base + 12 * shift }
+    func shiftAllowed(_ shift: Int) -> Bool { (12...(108 - 12 * cfg.pianoOctaves)).contains(startFor(shift: shift)) }
+    var start: Int { min(max(startFor(shift: cfg.pianoShift), 12), 108 - 12 * cfg.pianoOctaves) }
+
+    func sounding(_ n: Int) -> Bool { (counts[n] ?? 0) > 0 }
+
+    func open() {
+        guard window == nil, let s = screen(for: targetDisplay()) ?? NSScreen.main else { return }
+        endGesture()
+        setUpAudio()
+        let w = CalibrationWindow(contentRect: s.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        w.level = .screenSaver
+        w.backgroundColor = .black
+        w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        let v = PianoView(frame: NSRect(origin: .zero, size: s.frame.size))
+        v.owner = self
+        w.contentView = v
+        w.setFrame(s.frame, display: true)
+        window = w; view = v
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+        w.makeFirstResponder(v)
+        log("piano open: \(cfg.pianoOctaves) octaves from \(noteName(start))")
+    }
+
+    func close() {
+        allOff()
+        window?.orderOut(nil)
+        window = nil; view = nil
+        log("piano closed")
+    }
+
+    func setUpAudio() {
+        if !audioReady {
+            engine.attach(sampler)
+            engine.connect(sampler, to: engine.mainMixerNode, format: nil)
+            MIDIClientCreate("MacTouch" as CFString, nil, nil, &midiClient)
+            MIDISourceCreateWithProtocol(midiClient, "MacTouch Piano" as CFString, ._1_0, &midiSource)
+            audioReady = true
+        }
+        if !engine.isRunning {
+            do { try engine.start() } catch { log("piano audio failed to start: \(error)") }
+        }
+        if loadedProgram != cfg.pianoSound {
+            do {
+                try sampler.loadSoundBankInstrument(at: soundBank, program: UInt8(cfg.pianoSound),
+                                                    bankMSB: UInt8(kAUSampler_DefaultMelodicBankMSB),
+                                                    bankLSB: UInt8(kAUSampler_DefaultBankLSB))
+                loadedProgram = cfg.pianoSound
+            } catch { log("piano sound \(cfg.pianoSound) failed to load: \(error)") }
+        }
+    }
+
+    func settingsChanged() {
+        guard active else { return }
+        allOff(); setUpAudio(); view?.needsDisplay = true
+    }
+
+    // MIDI 1.0 channel voice message on the virtual source, channel 1.
+    func midi(_ status: UInt8, _ a: UInt8, _ b: UInt8) {
+        var list = MIDIEventList()
+        let packet = MIDIEventListInit(&list, ._1_0)
+        var word = UInt32(0x2) << 28 | UInt32(status) << 16 | UInt32(a) << 8 | UInt32(b)
+        _ = MIDIEventListAdd(&list, MemoryLayout<MIDIEventList>.size, packet, 0, 1, &word)
+        MIDIReceivedEventList(midiSource, &list)
+    }
+
+    func noteOn(_ n: Int, velocity: UInt8) {
+        counts[n, default: 0] += 1
+        guard counts[n] == 1 else { return }
+        sampler.startNote(UInt8(n), withVelocity: velocity, onChannel: 0)
+        midi(0x90, UInt8(n), velocity)
+    }
+
+    func noteOff(_ n: Int) {
+        guard let c = counts[n], c > 0 else { return }
+        counts[n] = c - 1
+        guard c == 1 else { return }
+        sampler.stopNote(UInt8(n), onChannel: 0)
+        midi(0x80, UInt8(n), 0)
+    }
+
+    func allOff() {
+        for (n, c) in counts where c > 0 { counts[n] = 1; noteOff(n) }
+        fingers.removeAll()
+        if sustain { setSustain(false) }
+    }
+
+    func setSustain(_ on: Bool) {
+        sustain = on
+        sampler.sendController(64, withValue: on ? 127 : 0, onChannel: 0)
+        midi(0xB0, 64, on ? 127 : 0)
+    }
+
+    // Front of a key (bottom of the screen) plays louder, like striking it harder.
+    func velocity(_ p: CGPoint) -> UInt8 {
+        guard let v = view else { return 90 }
+        let f = min(max((p.y - v.keyTop) / (v.bounds.height - v.keyTop), 0), 1)
+        return UInt8(45 + 82 * f)
+    }
+
+    // Called once per HID report with every touching finger: slot -> global screen point.
+    func feed(_ touches: [Int: CGPoint]) {
+        guard let v = view, let w = window else { return }
+        let origin = w.frame.origin, primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        var changed = false
+        for (slot, g) in touches {
+            let p = CGPoint(x: g.x - origin.x, y: g.y - (primaryHeight - origin.y - w.frame.height))   // view coords
+            let h = v.hit(p)
+            if let old = fingers[slot] {
+                guard case .note = old, case .note(let n) = h, old != h else { continue }   // slide onto another key
+                if case .note(let o) = old { noteOff(o) }
+                noteOn(n, velocity: velocity(p)); fingers[slot] = h; changed = true
+                continue
+            }
+            declareUserActivity()
+            fingers[slot] = h; changed = true
+            switch h {
+            case .note(let n): noteOn(n, velocity: velocity(p))
+            case .down, .up:
+                let shift = cfg.pianoShift + (h == .up ? 1 : -1)
+                if shiftAllowed(shift) { allOff(); setSetting("pianoShift", shift) }
+            case .sound:
+                let i = pianoSounds.firstIndex { $0.program == cfg.pianoSound } ?? -1
+                setSetting("pianoSound", pianoSounds[(i + 1) % pianoSounds.count].program)
+                settingsChanged()
+            case .sustain: setSustain(!sustain)
+            case .done: close(); mode = .done; return   // ignore the fingers still down
+            case .none: break
+            }
+        }
+        for (slot, h) in fingers where touches[slot] == nil {   // lifted
+            if case .note(let n) = h { noteOff(n) }
+            fingers[slot] = nil; changed = true
+        }
+        if changed { v.needsDisplay = true }
+    }
+}
+let piano = Piano()
+
 // MARK: HID input
 
 // The controller reports up to 10 contacts, each in its own Finger collection (0x0D/0x22) holding
@@ -966,6 +1222,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appList(menu, "Drag Apps", "dragApps", cfg.dragApps, "In these apps one finger always drags.")
         appList(menu, "Zoom-Key Apps", "zoomKeyApps", cfg.zoomKeyApps, "In these apps pinch sends ⌘+ / ⌘−.")
         menu.addItem(.separator())
+        add(menu, piano.active ? "Close Piano" : "Piano…", #selector(togglePiano(_:)), enabled: hidOpen && !touchDevices().isEmpty)
+        choices(menu, "Piano Octaves", "pianoOctaves", cfg.pianoOctaves, (1...6).map { ("\($0) octave\($0 == 1 ? "" : "s")", $0) })
+        choices(menu, "Piano Sound", "pianoSound", cfg.pianoSound, pianoSounds.map { ($0.name, $0.program) })
+        menu.addItem(.separator())
         add(menu, "Calibrate Touch…", #selector(calibrate(_:)), enabled: hidOpen && !touchDevices().isEmpty)
         add(menu, "Undo Calibration", #selector(undoCalibration(_:)), enabled: previousCal.map { $0 != cfg.cal } ?? false)
         add(menu, "Reset Calibration", #selector(resetCalibration(_:)), enabled: cfg.cal != identityCal)
@@ -1045,7 +1305,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func choose(_ s: NSMenuItem) {
         guard let kv = s.representedObject as? [Any], let key = kv[0] as? String else { return }
         setSetting(key, kv[1])
+        if key.hasPrefix("piano") { piano.settingsChanged() }
     }
+    @objc func togglePiano(_ s: NSMenuItem) { piano.active ? piano.close() : piano.open() }
     @objc func addApp(_ s: NSMenuItem) {
         guard let kv = s.representedObject as? [String] else { return }
         let list = kv[0] == "dragApps" ? cfg.dragApps : cfg.zoomKeyApps

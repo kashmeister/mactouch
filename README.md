@@ -172,11 +172,31 @@ first line of the menu says which.
 | Multi-Finger Swipes | Three or four fingers, four only, or off |
 | Resize Windows at Edges | Drags that start at a window edge resize it |
 | Drag Apps, Zoom-Key Apps | Lists of apps with special handling. **Add …** adds the app that was in front when the menu opened; click an app to remove it |
+| Piano…, Piano Octaves, Piano Sound | Open piano mode, set its size and sound |
 | Calibrate Touch… | Run the calibration wizard |
 | Undo Calibration | Switch back to the calibration before the last change; choose it again to redo |
 | Reset Calibration | Go back to an uncalibrated mapping; Undo restores the calibration |
 | Open Log | Open `~/Library/Logs/MacTouch.log` |
 | Quit MacTouch | Quit until the next login |
+
+### Piano mode
+
+**Piano…** in the menu opens a full-screen keyboard on the touch display. While it is open, touches
+bypass mouse emulation: every finger plays its own note, so chords and both hands work, and sliding
+a finger across the keys plays each one. The glass cannot sense pressure, so the front of a key, at
+the bottom of the screen, plays louder than the back.
+
+| Control | Effect |
+|---|---|
+| ◀ ▶ | Shift the keyboard down or up an octave |
+| ♪ sound | Cycle through Grand Piano, Electric Piano, Harpsichord, Vibraphone, Organ, Strings and Choir |
+| Sustain | Latch the sustain pedal |
+| Done, or Esc | Close the piano |
+
+**Piano Octaves** in the menu sets the size, 1 to 6 octaves; the default 3 octaves gives 22 white
+keys. The sounds are the General MIDI set that ships with macOS. MacTouch also appears as a MIDI
+source named **MacTouch Piano**, so GarageBand, Logic or any synth can play the notes with better
+instruments.
 
 ### Calibration
 
@@ -266,6 +286,8 @@ switches take `=false` to turn them off.
 | `--titlebar=` | `44` | Height in points of the drag zone at the top of each window; `0` turns it off |
 | `--edge=` | `12` | Distance in points from a window edge within which a drag resizes; `0` turns it off |
 | `--ring-color=` | `#FF6A00` | Hold cue ring colour, `#RRGGBB` or `accent` |
+| `--piano-octaves=` | `3` | Piano mode keyboard size, 1 to 6 octaves |
+| `--piano-sound=` | `0` | Piano mode General MIDI program; the menu lists the built-in choices |
 | `--keep-keyboard` | on | Restore the Accessibility Keyboard's position after display sleep |
 | `--swipes=` | `3` | Multi-finger swipes with three or four fingers (`3`), four only (`4`), or `off` |
 
