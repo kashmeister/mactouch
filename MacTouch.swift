@@ -824,7 +824,11 @@ let whiteSteps = [0, 2, 4, 5, 7, 9, 11]   // semitones of C D E F G A B
 let noteNames = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
 func noteName(_ n: Int) -> String { noteNames[n % 12] + "\(n / 12 - 1)" }
 
-enum PianoHit: Equatable { case note(Int), down, up, sound, sustain, done, none }
+enum PianoHit: Equatable { case note(Int), down, up, octaves, sound, sustain, loop, clearLoop, done, none }
+
+// Simple looper: arm it, play (recording starts on the first note), tap again to loop what you
+// played while you keep playing over it.
+enum LoopState { case empty, armed, recording(Double), playing, stopped }
 
 final class PianoView: NSView {
     weak var owner: Piano?
@@ -838,12 +842,17 @@ final class PianoView: NSView {
     var keyTop: CGFloat { toolbar }
     var blackHeight: CGFloat { (bounds.height - toolbar) * 0.62 }
 
-    // Toolbar buttons
-    var downRect: NSRect { NSRect(x: 8, y: 4, width: 64, height: toolbar - 8) }
-    var upRect: NSRect { NSRect(x: 80, y: 4, width: 64, height: toolbar - 8) }
-    var soundRect: NSRect { NSRect(x: bounds.midX - 130, y: 4, width: 260, height: toolbar - 8) }
-    var sustainRect: NSRect { NSRect(x: bounds.maxX - 260, y: 4, width: 120, height: toolbar - 8) }
-    var doneRect: NSRect { NSRect(x: bounds.maxX - 128, y: 4, width: 120, height: toolbar - 8) }
+    // Toolbar buttons: octave shift, range and size on the left, sound in the middle, the rest on the right
+    func bar(_ x: CGFloat, _ w: CGFloat) -> NSRect { NSRect(x: x, y: 4, width: w, height: toolbar - 8) }
+    var downRect: NSRect { bar(8, 64) }
+    var upRect: NSRect { bar(80, 64) }
+    var rangeRect: NSRect { bar(152, 170) }
+    var octavesRect: NSRect { bar(330, 150) }
+    var soundRect: NSRect { bar(bounds.midX - 130, 260) }
+    var doneRect: NSRect { bar(bounds.maxX - 128, 120) }
+    var clearRect: NSRect { bar(doneRect.minX - 72, 64) }
+    var loopRect: NSRect { bar(clearRect.minX - 228, 220) }
+    var sustainRect: NSRect { bar(loopRect.minX - 128, 120) }
 
     func whiteNote(_ i: Int) -> Int { (owner?.start ?? 48) + 12 * (i / 7) + whiteSteps[i % 7] }
     func hasBlack(_ i: Int) -> Bool { [0, 1, 3, 4, 5].contains(i % 7) && i < whiteCount - 1 }
@@ -854,8 +863,9 @@ final class PianoView: NSView {
 
     func hit(_ p: CGPoint) -> PianoHit {
         if p.y < toolbar {
-            for (r, h) in [(downRect, PianoHit.down), (upRect, .up), (soundRect, .sound), (sustainRect, .sustain), (doneRect, .done)]
-            where r.contains(p) { return h }
+            for (r, h) in [(downRect, PianoHit.down), (upRect, .up), (octavesRect, .octaves), (soundRect, .sound),
+                           (sustainRect, .sustain), (loopRect, .loop), (clearRect, .clearLoop), (doneRect, .done)]
+            where r.contains(p) { return h == .clearLoop && !(owner?.hasLoop ?? false) ? .none : h }
             return .none
         }
         let i = min(max(Int(p.x / whiteWidth), 0), whiteCount - 1)
@@ -871,7 +881,8 @@ final class PianoView: NSView {
         let lit = color(cfg.ringColor), keyH = bounds.height - toolbar
         for i in 0..<whiteCount {
             let r = NSRect(x: CGFloat(i) * whiteWidth, y: keyTop, width: whiteWidth, height: keyH).insetBy(dx: 1, dy: 0)
-            (o.sounding(whiteNote(i)) ? lit : NSColor(white: 0.96, alpha: 1)).setFill()
+            let level = o.sounding(whiteNote(i))
+            (level == 2 ? lit : level == 1 ? lit.blended(withFraction: 0.55, of: .white)! : NSColor(white: 0.96, alpha: 1)).setFill()
             NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
             if whiteNote(i) % 12 == 0 {
                 label(noteName(whiteNote(i)), in: NSRect(x: r.minX, y: r.maxY - 30, width: r.width, height: 20),
@@ -879,19 +890,30 @@ final class PianoView: NSView {
             }
         }
         for i in 0..<whiteCount where hasBlack(i) {
-            (o.sounding(whiteNote(i) + 1) ? lit.blended(withFraction: 0.35, of: .black)! : NSColor(white: 0.12, alpha: 1)).setFill()
+            let level = o.sounding(whiteNote(i) + 1)
+            (level == 2 ? lit.blended(withFraction: 0.35, of: .black)! : level == 1 ? lit.blended(withFraction: 0.65, of: .black)!
+                : NSColor(white: 0.12, alpha: 1)).setFill()
             NSBezierPath(roundedRect: blackRect(i), xRadius: 3, yRadius: 3).fill()
         }
         let range = "\(noteName(o.start)) – \(noteName(o.start + 12 * cfg.pianoOctaves))"
         button("◀", downRect); button("▶", upRect)
-        label(range, in: NSRect(x: upRect.maxX + 12, y: 4, width: 200, height: toolbar - 8), size: 17, color: .white, align: .left)
+        label(range, in: rangeRect, size: 17, color: .white)
+        button("\(cfg.pianoOctaves) octave\(cfg.pianoOctaves == 1 ? "" : "s")", octavesRect)
         button("♪ " + (pianoSounds.first { $0.program == cfg.pianoSound }?.name ?? "Program \(cfg.pianoSound)"), soundRect)
         button("Sustain", sustainRect, on: o.sustain)
+        switch o.loop {
+        case .empty: button("● Loop", loopRect)
+        case .armed: button("● Play to record", loopRect, fill: .systemRed)
+        case .recording: button("■ Stop recording", loopRect, fill: .systemRed)
+        case .playing: button(String(format: "■ Stop loop (%.1f s)", o.loopLength), loopRect, on: true)
+        case .stopped: button(String(format: "▶ Play loop (%.1f s)", o.loopLength), loopRect)
+        }
+        if o.hasLoop { button("✕", clearRect) }
         button("Done", doneRect)
     }
 
-    func button(_ title: String, _ r: NSRect, on: Bool = false) {
-        (on ? color(cfg.ringColor) : NSColor(white: 0.22, alpha: 1)).setFill()
+    func button(_ title: String, _ r: NSRect, on: Bool = false, fill: NSColor? = nil) {
+        (fill ?? (on ? color(cfg.ringColor) : NSColor(white: 0.22, alpha: 1))).setFill()
         NSBezierPath(roundedRect: r, xRadius: 8, yRadius: 8).fill()
         label(title, in: r, size: 17, color: on ? .black : .white)
     }
@@ -914,12 +936,15 @@ final class Piano: NSObject {
     var fingers: [Int: PianoHit] = [:]   // slot -> what that finger is on
     var counts: [Int: Int] = [:]         // note -> fingers holding it
     var sustain = false
+    var loop = LoopState.empty, loopEvents: [(t: Double, note: Int, velocity: UInt8)] = [], loopLength = 0.0
+    var loopGen = 0, loopSounding: Set<Int> = []
+    var hasLoop: Bool { switch loop { case .playing, .stopped: return true; default: return false } }
     var base: Int { 60 - 12 * (cfg.pianoOctaves / 2) }   // middle C near the centre
     func startFor(shift: Int) -> Int { base + 12 * shift }
     func shiftAllowed(_ shift: Int) -> Bool { (12...(108 - 12 * cfg.pianoOctaves)).contains(startFor(shift: shift)) }
     var start: Int { min(max(startFor(shift: cfg.pianoShift), 12), 108 - 12 * cfg.pianoOctaves) }
 
-    func sounding(_ n: Int) -> Bool { (counts[n] ?? 0) > 0 }
+    func sounding(_ n: Int) -> Int { (counts[n] ?? 0) > 0 ? 2 : loopSounding.contains(n) ? 1 : 0 }   // 2 you, 1 loop
 
     func open() {
         guard window == nil, let s = screen(for: targetDisplay()) ?? NSScreen.main else { return }
@@ -942,6 +967,10 @@ final class Piano: NSObject {
 
     func close() {
         allOff()
+        if sustain { setSustain(false) }
+        if case .playing = loop { stopLoop(); loop = .stopped }
+        if case .recording = loop { loop = .empty; loopEvents = [] }
+        if case .armed = loop { loop = .empty }
         window?.orderOut(nil)
         window = nil; view = nil
         log("piano closed")
@@ -985,6 +1014,8 @@ final class Piano: NSObject {
     func noteOn(_ n: Int, velocity: UInt8) {
         counts[n, default: 0] += 1
         guard counts[n] == 1 else { return }
+        if case .armed = loop { loop = .recording(now()); view?.needsDisplay = true }
+        if case .recording(let t0) = loop { loopEvents.append((now() - t0, n, velocity)) }
         sampler.startNote(UInt8(n), withVelocity: velocity, onChannel: 0)
         midi(0x90, UInt8(n), velocity)
     }
@@ -993,6 +1024,7 @@ final class Piano: NSObject {
         guard let c = counts[n], c > 0 else { return }
         counts[n] = c - 1
         guard c == 1 else { return }
+        if case .recording(let t0) = loop { loopEvents.append((now() - t0, n, 0)) }
         sampler.stopNote(UInt8(n), onChannel: 0)
         midi(0x80, UInt8(n), 0)
     }
@@ -1000,7 +1032,57 @@ final class Piano: NSObject {
     func allOff() {
         for (n, c) in counts where c > 0 { counts[n] = 1; noteOff(n) }
         fingers.removeAll()
-        if sustain { setSustain(false) }
+    }
+
+    // MARK: looper
+
+    func loopTapped() {
+        switch loop {
+        case .empty: loop = .armed
+        case .armed: loop = .empty
+        case .recording(let t0):
+            loopLength = now() - t0
+            let held = Set(loopEvents.map(\.note)).filter { n in loopEvents.last { $0.note == n }?.velocity ?? 0 > 0 }
+            loopEvents += held.map { (loopLength, $0, 0) }   // close notes still held at the loop point
+            if loopLength < 0.2 || loopEvents.isEmpty { clearLoop(); return }
+            loop = .playing; startLoop()
+            log(String(format: "loop recorded: %.2f s, %d notes", loopLength, loopEvents.filter { $0.velocity > 0 }.count))
+        case .playing: stopLoop(); loop = .stopped
+        case .stopped: loop = .playing; startLoop()
+        }
+    }
+
+    func clearLoop() { stopLoop(); loop = .empty; loopEvents = []; loopLength = 0 }
+
+    // Each pass is scheduled from the previous pass's start, so the loop does not drift.
+    func startLoop() { loopGen += 1; pass(from: .now(), gen: loopGen) }
+    func pass(from start: DispatchTime, gen: Int) {
+        for e in loopEvents {
+            DispatchQueue.main.asyncAfter(deadline: start + e.t) { [weak self] in
+                guard let self, gen == self.loopGen else { return }
+                self.loopNote(e.note, e.velocity)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: start + loopLength) { [weak self] in
+            guard let self, gen == self.loopGen else { return }
+            self.pass(from: start + self.loopLength, gen: gen)
+        }
+    }
+
+    func loopNote(_ n: Int, _ velocity: UInt8) {
+        if velocity > 0 {
+            sampler.startNote(UInt8(n), withVelocity: velocity, onChannel: 0)
+            midi(0x90, UInt8(n), velocity); loopSounding.insert(n)
+        } else {
+            if (counts[n] ?? 0) == 0 { sampler.stopNote(UInt8(n), onChannel: 0) }   // unless you are holding it
+            midi(0x80, UInt8(n), 0); loopSounding.remove(n)
+        }
+        view?.needsDisplay = true
+    }
+
+    func stopLoop() {
+        loopGen += 1
+        for n in loopSounding { loopNote(n, 0) }
     }
 
     func setSustain(_ on: Bool) {
@@ -1042,6 +1124,12 @@ final class Piano: NSObject {
                 setSetting("pianoSound", pianoSounds[(i + 1) % pianoSounds.count].program)
                 settingsChanged()
             case .sustain: setSustain(!sustain)
+            case .loop: loopTapped()
+            case .clearLoop: clearLoop()
+            case .octaves:
+                allOff()
+                setSetting("pianoOctaves", cfg.pianoOctaves % 6 + 1)
+                if !shiftAllowed(cfg.pianoShift) { setSetting("pianoShift", 0) }
             case .done: close(); mode = .done; return   // ignore the fingers still down
             case .none: break
             }
@@ -1223,8 +1311,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appList(menu, "Zoom-Key Apps", "zoomKeyApps", cfg.zoomKeyApps, "In these apps pinch sends ⌘+ / ⌘−.")
         menu.addItem(.separator())
         add(menu, piano.active ? "Close Piano" : "Piano…", #selector(togglePiano(_:)), enabled: hidOpen && !touchDevices().isEmpty)
-        choices(menu, "Piano Octaves", "pianoOctaves", cfg.pianoOctaves, (1...6).map { ("\($0) octave\($0 == 1 ? "" : "s")", $0) })
-        choices(menu, "Piano Sound", "pianoSound", cfg.pianoSound, pianoSounds.map { ($0.name, $0.program) })
         menu.addItem(.separator())
         add(menu, "Calibrate Touch…", #selector(calibrate(_:)), enabled: hidOpen && !touchDevices().isEmpty)
         add(menu, "Undo Calibration", #selector(undoCalibration(_:)), enabled: previousCal.map { $0 != cfg.cal } ?? false)

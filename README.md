@@ -172,7 +172,7 @@ first line of the menu says which.
 | Multi-Finger Swipes | Three or four fingers, four only, or off |
 | Resize Windows at Edges | Drags that start at a window edge resize it |
 | Drag Apps, Zoom-Key Apps | Lists of apps with special handling. **Add …** adds the app that was in front when the menu opened; click an app to remove it |
-| Piano…, Piano Octaves, Piano Sound | Open piano mode, set its size and sound |
+| Piano… | Open piano mode; its settings are in the bar above the keys |
 | Calibrate Touch… | Run the calibration wizard |
 | Undo Calibration | Switch back to the calibration before the last change; choose it again to redo |
 | Reset Calibration | Go back to an uncalibrated mapping; Undo restores the calibration |
@@ -186,15 +186,18 @@ bypass mouse emulation: every finger plays its own note, so chords and both hand
 a finger across the keys plays each one. The glass cannot sense pressure, so the front of a key, at
 the bottom of the screen, plays louder than the back.
 
+All controls are in the bar above the keys:
+
 | Control | Effect |
 |---|---|
-| ◀ ▶ | Shift the keyboard down or up an octave |
+| ◀ ▶ | Shift the keyboard down or up an octave; the range is shown next to them |
+| *n* octaves | Cycle the keyboard size from 1 to 6 octaves; the default 3 gives 22 white keys |
 | ♪ sound | Cycle through Grand Piano, Electric Piano, Harpsichord, Vibraphone, Organ, Strings and Choir |
 | Sustain | Latch the sustain pedal |
+| Loop | Tap to arm, then play: recording starts on your first note. Tap again to loop what you played, and keep playing over it. Tap to stop or restart the loop; ✕ clears it |
 | Done, or Esc | Close the piano |
 
-**Piano Octaves** in the menu sets the size, 1 to 6 octaves; the default 3 octaves gives 22 white
-keys. The sounds are the General MIDI set that ships with macOS. MacTouch also appears as a MIDI
+Keys you press light up in the hold ring colour; keys the loop plays light up paler. The sounds are the General MIDI set that ships with macOS. MacTouch also appears as a MIDI
 source named **MacTouch Piano**, so GarageBand, Logic or any synth can play the notes with better
 instruments.
 
