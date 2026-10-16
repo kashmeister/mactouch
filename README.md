@@ -32,7 +32,7 @@ CGEvent:
 |---|---|---|
 | Tap, double-tap | Click, double click | same |
 | One finger, move | Drag | Scroll |
-| One finger, hold 0.6 s | Right click | Hold then move: drag. Hold then lift: right click |
+| One finger, hold 0.6 s | Right click | Hold then move: drag. Hold then lift, or keep holding still another 0.5 s: right click |
 | Two fingers, move | Scroll | same |
 | Two fingers, pinch | Zoom | same |
 | Two fingers, tap | Right click if enabled | same |

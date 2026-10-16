@@ -5,7 +5,8 @@
 // Gestures
 //   tap / double-tap        click / double click
 //   1 finger, move          drag            (one-finger scroll: scroll)
-//   1 finger, hold          right click     (one-finger scroll: hold+move = drag, hold+lift = right click)
+//   1 finger, hold          right click     (one-finger scroll: hold+move = drag; hold+lift, or keep
+//                                            holding still another 0.5 s, = right click)
 //   2 fingers, move         scroll
 //   2 fingers, pinch        zoom (trackpad magnify, or Cmd+/Cmd- per app)
 //   2 fingers, tap          right click     (only with two-finger tap)
@@ -268,6 +269,7 @@ enum Mode {
     case done                       // gesture consumed; wait for all fingers up
 }
 
+let heldRightClickSecs = 0.5   // one-finger scroll: holding still this long after the hold right-clicks
 let moveTol = 10.0, tapMaxSecs = 0.35, dblSecs = 0.45, dblDist = 24.0, pinchTol = 25.0, zoomKeyStep = log(1.25)
 var slots: [Int: Slot] = [:]   // keyed by finger collection cookie
 var mode = Mode.idle, dirty = false, pressSeq = 0, lastN = 0
@@ -456,8 +458,14 @@ func commit() {
             mode = .pending(p, seq)
             DispatchQueue.main.asyncAfter(deadline: .now() + cfg.hold) {
                 guard case .pending(let s, let q) = mode, q == seq, !inDragApp else { return }
-                if cfg.oneFingerScroll { mode = .held(s); log("hold at \(Int(s.x)),\(Int(s.y))") }
-                else { rightClick(s, "long press"); mode = .done }
+                if cfg.oneFingerScroll {
+                    mode = .held(s); log("hold at \(Int(s.x)),\(Int(s.y))")
+                    // Still holding without moving: right click now rather than waiting for the lift.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + heldRightClickSecs) {
+                        guard case .held(let h) = mode, pressSeq == seq else { return }
+                        rightClick(h, "long press"); mode = .done
+                    }
+                } else { rightClick(s, "long press"); mode = .done }
             }
         case .pending(let s, _):
             if dist(p, s) > moveTol {
