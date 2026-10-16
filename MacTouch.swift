@@ -35,6 +35,7 @@
 //   --edge=12               touches this close to a window's side, bottom or top edge resize it (0 = off)
 //   --swipes=3|4|off        multi-finger swipes with three or four fingers, four only, or off
 //   --keep-keyboard         put the Accessibility Keyboard back where it was after the display sleeps (default on)
+//   --ring-color=#FF6A00    hold cue ring colour: #RRGGBB or "accent" (default BMW instrument-cluster orange)
 import AppKit
 import IOKit
 import IOKit.hid
@@ -62,13 +63,13 @@ struct Config {
     var cal: [Double] = [1, 0, 1, 0]
     var oneFingerScroll = false, twoFingerTap = false, invertScroll = false, paused = false, keepKeyboard = true
     var hold = 0.6, scrollScale = 1.0, zoomScale = 1.0, titlebar = 44.0
-    var zoom = "gesture", swipes = "3", edge = 12.0
+    var zoom = "gesture", swipes = "3", edge = 12.0, ringColor = "#FF6A00"
     var dragApps = ["AssistiveControl"], zoomKeyApps: [String] = []
 }
 
 let identityCal: [Double] = [1, 0, 1, 0]
 
-enum Kind { case bool, double, int, string, zoom, swipes, list, cal }
+enum Kind { case bool, double, int, string, zoom, swipes, list, cal, color }
 let options: [(flag: String, key: String, kind: Kind)] = [
     ("--vid", "vid", .int), ("--pid", "pid", .int), ("--display", "display", .string),
     ("--flip-x", "flipX", .bool), ("--flip-y", "flipY", .bool), ("--swap", "swap", .bool), ("--cal", "cal", .cal),
@@ -77,6 +78,7 @@ let options: [(flag: String, key: String, kind: Kind)] = [
     ("--zoom", "zoom", .zoom), ("--zoom-scale", "zoomScale", .double),
     ("--zoom-key-apps", "zoomKeyApps", .list), ("--drag-apps", "dragApps", .list), ("--titlebar", "titlebar", .double),
     ("--edge", "edge", .double), ("--swipes", "swipes", .swipes), ("--keep-keyboard", "keepKeyboard", .bool),
+    ("--ring-color", "ringColor", .color),
 ]
 let actionFlags: Set<String> = ["--check", "--save", "--reset", "--probe", "--raw"]
 
@@ -89,6 +91,10 @@ func parse(_ s: String, _ kind: Kind) -> Any? {
     case .int: return num(Substring(s))
     case .string: return s.isEmpty ? nil : s
     case .zoom: return ["gesture", "keys", "off"].contains(s) ? s : nil
+    case .color:
+        if s == "accent" { return s }
+        let h = s.hasPrefix("#") ? String(s.dropFirst()) : s
+        return h.count == 6 && UInt32(h, radix: 16) != nil ? "#" + h.uppercased() : nil
     case .swipes: return ["3", "4", "off"].contains(s) ? s : nil
     case .list: return s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     case .cal:
@@ -128,7 +134,7 @@ func loadConfig() -> Config {
     rd("oneFingerScroll", \.oneFingerScroll); rd("twoFingerTap", \.twoFingerTap)
     rd("invertScroll", \.invertScroll); rd("paused", \.paused); rd("keepKeyboard", \.keepKeyboard)
     rd("hold", \.hold); rd("scrollScale", \.scrollScale); rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
-    rd("zoom", \.zoom); rd("swipes", \.swipes); rd("edge", \.edge); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
+    rd("ringColor", \.ringColor); rd("zoom", \.zoom); rd("swipes", \.swipes); rd("edge", \.edge); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
     if c.cal.count != 4 || c.cal[0] == 0 || c.cal[2] == 0 { c.cal = identityCal }
     return c
 }
@@ -327,6 +333,14 @@ func endGesture() {   // release anything held, e.g. when pausing or the control
 
 // Hold cue for one-finger scroll: once a hold registers, a ring under the finger fills over
 // heldRightClickSecs. Moving while it shows drags; when it is full, the right click fires.
+// "#RRGGBB" or "accent" (the system accent colour).
+func color(_ spec: String) -> NSColor {
+    if spec == "accent" { return .controlAccentColor }
+    guard let v = UInt32(spec.dropFirst(), radix: 16) else { return .orange }
+    return NSColor(srgbRed: CGFloat(v >> 16 & 0xFF) / 255, green: CGFloat(v >> 8 & 0xFF) / 255,
+                   blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+}
+
 final class HoldRing {
     let size: CGFloat = 120   // wider than a fingertip, so the ring stays visible around it
     var window: NSWindow?
@@ -336,6 +350,7 @@ final class HoldRing {
         let w = window ?? make()
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0   // CG is top-down, Cocoa bottom-up
         w.setFrame(NSRect(x: p.x - size / 2, y: primaryHeight - p.y - size / 2, width: size, height: size), display: false)
+        progress.strokeColor = color(cfg.ringColor).cgColor
         let fill = CABasicAnimation(keyPath: "strokeEnd")
         fill.fromValue = 0; fill.toValue = 1; fill.duration = duration
         progress.removeAllAnimations()
@@ -943,6 +958,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(menu, "Keep Keyboard Position", #selector(toggle(_:)), on: cfg.keepKeyboard, obj: "keepKeyboard")
         choices(menu, "Pinch", "zoom", cfg.zoom, [("Trackpad Zoom", "gesture"), ("⌘+ / ⌘− Keys", "keys"), ("Off", "off")])
         choices(menu, "Long Press", "hold", cfg.hold, [0.4, 0.5, 0.6, 0.8, 1.0].map { (String(format: "%.1f s", $0), $0) })
+        ringColors(menu)
         choices(menu, "Scroll Speed", "scrollScale", cfg.scrollScale, [0.5, 0.75, 1.0, 1.5, 2.0].map { ("\($0)×", $0) })
         choices(menu, "Multi-Finger Swipes", "swipes", cfg.swipes, [("Three or Four Fingers", "3"), ("Four Fingers Only", "4"), ("Off", "off")])
         add(menu, "Resize Windows at Edges", #selector(toggleEdge(_:)), on: cfg.edge > 0)
@@ -975,6 +991,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let sub = NSMenu(); sub.autoenablesItems = false
         for (label, v) in opts { add(sub, label, #selector(choose(_:)), on: v == current, obj: [key, v] as [Any]) }
         menu.addItem(withTitle: title, action: nil, keyEquivalent: "").submenu = sub
+    }
+
+    func ringColors(_ menu: NSMenu) {
+        let presets = [("BMW Orange", "#FF6A00"), ("Amber", "#FFB000"), ("White", "#FFFFFF"),
+                       ("Green", "#34C759"), ("Red", "#FF3B30"), ("Accent Color", "accent")]
+        let sub = NSMenu(); sub.autoenablesItems = false
+        for (label, v) in presets {
+            let i = add(sub, label, #selector(choose(_:)), on: v == cfg.ringColor, obj: ["ringColor", v] as [Any])
+            i.image = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { r in
+                color(v).setFill(); NSBezierPath(ovalIn: r.insetBy(dx: 0.5, dy: 0.5)).fill(); return true
+            }
+        }
+        if !presets.contains(where: { $0.1 == cfg.ringColor }) { add(sub, "Custom \(cfg.ringColor)", nil, on: true) }
+        menu.addItem(withTitle: "Hold Ring Color", action: nil, keyEquivalent: "").submenu = sub
     }
 
     func appList(_ menu: NSMenu, _ title: String, _ key: String, _ apps: [String], _ hint: String) {

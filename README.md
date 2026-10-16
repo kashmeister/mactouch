@@ -41,7 +41,8 @@ CGEvent:
 | One finger at a window edge, move | Resize the window | same |
 
 With one-finger scroll, a ring appears under the finger when the hold registers and fills over the
-next 0.5 s. Move while it shows to drag; when it is full, the right click fires.
+next 0.5 s. Move while it shows to drag; when it is full, the right click fires. Its colour is set
+under **Hold Ring Color** in the menu; the default is BMW instrument-cluster orange.
 
 A tap clicks on lift, at the point where the finger landed, so a hold can still become a right
 click.
@@ -167,6 +168,7 @@ first line of the menu says which.
 | Keep Keyboard Position | Put the Accessibility Keyboard back where it was after display sleep, wake and unlock |
 | Pinch | Trackpad zoom, ⌘+ / ⌘− keys, or off |
 | Long Press, Scroll Speed | Hold time and scroll speed |
+| Hold Ring Color | Colour of the hold cue ring |
 | Multi-Finger Swipes | Three or four fingers, four only, or off |
 | Resize Windows at Edges | Drags that start at a window edge resize it |
 | Drag Apps, Zoom-Key Apps | Lists of apps with special handling. **Add …** adds the app that was in front when the menu opened; click an app to remove it |
@@ -263,6 +265,7 @@ switches take `=false` to turn them off.
 | `--drag-apps=` | `AssistiveControl` | Apps where one finger always drags |
 | `--titlebar=` | `44` | Height in points of the drag zone at the top of each window; `0` turns it off |
 | `--edge=` | `12` | Distance in points from a window edge within which a drag resizes; `0` turns it off |
+| `--ring-color=` | `#FF6A00` | Hold cue ring colour, `#RRGGBB` or `accent` |
 | `--keep-keyboard` | on | Restore the Accessibility Keyboard's position after display sleep |
 | `--swipes=` | `3` | Multi-finger swipes with three or four fingers (`3`), four only (`4`), or `off` |
 
