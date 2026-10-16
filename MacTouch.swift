@@ -311,6 +311,7 @@ func post(_ type: CGEventType, _ p: CGPoint, _ button: CGMouseButton = .left, cl
 var lastTouchTap = 0.0
 func tap(_ p: CGPoint) {
     lastTouchTap = now()
+    autoKeyboardTapped()
     let t = now()
     clicks = (t - lastTapTime < dblSecs && dist(p, lastTapPt) < dblDist) ? clicks + 1 : 1
     lastTapTime = t; lastTapPt = p
@@ -523,7 +524,9 @@ func commit() {
         switch mode {
         case .pending(let s, _): tap(s)
         case .held(let s): rightClick(s, "long press")
-        case .dragging: post(.leftMouseUp, shifted(lastPt)); log("drag end at \(Int(lastPt.x)),\(Int(lastPt.y))")
+        case .dragging:
+            post(.leftMouseUp, shifted(lastPt)); log("drag end at \(Int(lastPt.x)),\(Int(lastPt.y))")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { rememberKeyboard() }   // the keyboard may have moved
         case .swipe(_, _, let fired): if !fired { log("swipe end (too short)") }
         case .scroll1: log("scroll end (1 finger)")
         case .two(let c, let t0, let kind):
@@ -750,6 +753,30 @@ func keyboardButton(_ title: String) -> CGRect? {
 func clickKeyboard(_ r: CGRect) {
     let back = CGEvent(source: nil)?.location ?? .zero, p = CGPoint(x: r.midX, y: r.midY)
     post(.mouseMoved, p); post(.leftMouseDown, p); post(.leftMouseUp, p); post(.mouseMoved, back)
+}
+
+// Polling runs only when it can matter: every 0.25 s for 2.5 s after a tap, then every second while
+// MacTouch has the keyboard expanded, otherwise not at all.
+var autoKeyboardTimer: Timer?, autoKeyboardInterval = 0.0
+
+func autoKeyboardTapped() {
+    guard cfg.autoKeyboard else { return }
+    if !autoExpanded, let e = focusIsEditable() { wasEditable = e }   // focus before this tap lands
+    scheduleAutoKeyboard(0.25)
+}
+
+func scheduleAutoKeyboard(_ interval: Double) {
+    guard interval != autoKeyboardInterval || autoKeyboardTimer == nil else { return }
+    autoKeyboardTimer?.invalidate()
+    autoKeyboardInterval = interval
+    let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+        autoKeyboardTick()
+        if now() - lastTouchTap < 2.5 { scheduleAutoKeyboard(0.25) }
+        else if autoExpanded && cfg.autoKeyboard { scheduleAutoKeyboard(1) }
+        else { autoKeyboardTimer?.invalidate(); autoKeyboardTimer = nil; autoKeyboardInterval = 0 }
+    }
+    t.tolerance = interval * 0.2
+    autoKeyboardTimer = t
 }
 
 func autoKeyboardTick() {
@@ -1262,6 +1289,11 @@ final class Piano: NSObject {
         conducting = false; conductorGen += 1; metroGen += 1
         releaseLoopNotes()
         redraw?.invalidate(); redraw = nil
+        // A running engine renders silence ~100 times a second and keeps the audio device busy.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, !self.active else { return }
+            self.engine.stop()
+        }
         window?.orderOut(nil)
         window = nil; view = nil
         log("music closed")
@@ -1997,8 +2029,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             scheduleRestore([3, 8], "wake")
         }
         scheduleRestore([2], "launch")
-        Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in rememberKeyboard() }
-        Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in autoKeyboardTick() }
+        // Panels move when dragged (remembered right after each drag); this catches anything else.
+        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in rememberKeyboard() }.tolerance = 5
         updateIcon()
     }
 
