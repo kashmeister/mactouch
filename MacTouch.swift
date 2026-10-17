@@ -37,6 +37,7 @@
 //   --auto-keyboard         expand the minimized Accessibility Keyboard when a touch focuses a text field (default on)
 //   --keep-keyboard         put the Accessibility Keyboard back where it was after the display sleeps (default on)
 //   --ring-color=#FF6A00    hold cue ring colour: #RRGGBB or "accent" (default gauge orange)
+//   --ink-predict=20        whiteboard: draw lines this many ms ahead of the finger (0 to 50, 0 off)
 //   --piano-octaves=3       piano mode keyboard size (1-6)        --piano-sound=0   General MIDI program
 import AppKit
 import IOKit
@@ -69,7 +70,7 @@ struct Config {
     var pianoOctaves = 3, pianoSound = 0, pianoShift = 0, pianoDynamics = false
     var musicMode = "piano", strumSound = 46, thereminWave = 0, thereminSnap = false, metronomeBPM = 0
     var hold = 0.6, scrollScale = 1.0, zoomScale = 1.0, titlebar = 44.0
-    var zoom = "gesture", swipes = "3", edge = 12.0, ringColor = "#FF6A00"
+    var zoom = "gesture", swipes = "3", edge = 12.0, ringColor = "#FF6A00", inkPredict = 20.0
     var dragApps = ["AssistiveControl"], zoomKeyApps: [String] = []
 }
 
@@ -85,7 +86,7 @@ let options: [(flag: String, key: String, kind: Kind)] = [
     ("--zoom-key-apps", "zoomKeyApps", .list), ("--drag-apps", "dragApps", .list), ("--titlebar", "titlebar", .double),
     ("--edge", "edge", .double), ("--swipes", "swipes", .swipes), ("--keep-keyboard", "keepKeyboard", .bool),
     ("--auto-keyboard", "autoKeyboard", .bool),
-    ("--ring-color", "ringColor", .color),
+    ("--ring-color", "ringColor", .color), ("--ink-predict", "inkPredict", .double),
     ("--piano-octaves", "pianoOctaves", .int), ("--piano-sound", "pianoSound", .int),
 ]
 let actionFlags: Set<String> = ["--check", "--save", "--reset", "--probe", "--raw"]
@@ -146,6 +147,7 @@ func loadConfig() -> Config {
     rd("pianoOctaves", \.pianoOctaves); rd("pianoSound", \.pianoSound); rd("pianoShift", \.pianoShift); rd("pianoDynamics", \.pianoDynamics)
     rd("musicMode", \.musicMode); rd("strumSound", \.strumSound); rd("thereminWave", \.thereminWave)
     rd("thereminSnap", \.thereminSnap); rd("metronomeBPM", \.metronomeBPM); rd("autoKeyboard", \.autoKeyboard)
+    rd("inkPredict", \.inkPredict); c.inkPredict = min(max(c.inkPredict, 0), 50)
     c.pianoOctaves = min(max(c.pianoOctaves, 1), 6); c.pianoSound = min(max(c.pianoSound, 0), 127)
     if c.cal.count != 4 || c.cal[0] == 0 || c.cal[2] == 0 { c.cal = identityCal }
     return c
@@ -1740,7 +1742,20 @@ let penColors: [(name: String, spec: String)] = [
 ]
 let penWidths: [CGFloat] = [3, 7, 14]
 
-struct Stroke { var id: Int, points: [CGPoint], color: NSColor, width: CGFloat }
+struct Stroke {
+    var id: Int, points: [CGPoint], color: NSColor, width: CGFloat
+    var bounds: CGRect   // everything the stroke covers, for redrawing only what changed
+    init(id: Int, at p: CGPoint, color: NSColor, width: CGFloat) {
+        self.id = id; points = [p]; self.color = color; self.width = width; bounds = Stroke.around(p, p, width)
+    }
+    mutating func add(_ p: CGPoint) -> CGRect {
+        let r = Stroke.around(points[points.count - 1], p, width)
+        points.append(p); bounds = bounds.union(r); return r
+    }
+    static func around(_ a: CGPoint, _ b: CGPoint, _ width: CGFloat) -> CGRect {
+        CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y)).insetBy(dx: -width / 2 - 2, dy: -width / 2 - 2)
+    }
+}
 enum SketchTool: Equatable { case pen(Int), size, eraser, undo, board, use, clear, save, done }
 
 final class SketchView: NSView {
@@ -1778,24 +1793,30 @@ final class SketchView: NSView {
                                       : NSRect(x: 0, y: 0, width: bounds.width, height: 44)
     }
 
+    // Only the strokes that cross the changed area are drawn, and AppKit clips to it: repainting the
+    // whole 5K-backed board for every touch report was the slow part.
     override func draw(_ dirtyRect: NSRect) {
         guard let o = owner else { return }
-        if !o.overlay { (o.light ? NSColor(white: 0.97, alpha: 1) : NSColor(white: 0.1, alpha: 1)).setFill(); bounds.fill() }
-        for s in o.strokes {
+        let t0 = now()
+        if o.overlay { NSColor.clear.setFill(); dirtyRect.fill(using: .copy) }
+        else { (o.light ? NSColor(white: 0.97, alpha: 1) : NSColor(white: 0.1, alpha: 1)).setFill(); dirtyRect.fill() }
+        for s in o.strokes where needsToDraw(s.bounds) || o.predicted[s.id].map({ needsToDraw(Stroke.around(s.points[s.points.count - 1], $0, s.width)) }) == true {
             s.color.setStroke()
             let path = NSBezierPath()
             path.lineWidth = s.width; path.lineCapStyle = .round; path.lineJoinStyle = .round
             path.move(to: s.points[0])
             if s.points.count == 1 { path.line(to: CGPoint(x: s.points[0].x + 0.1, y: s.points[0].y)) }
             for p in s.points.dropFirst() { path.line(to: p) }
+            if let tip = o.predicted[s.id] { path.line(to: tip) }   // where the finger probably is by now
             path.stroke()
         }
+        defer { o.drawTime += now() - t0; o.draws += 1 }
         for p in o.eraserPoints.values {
             NSColor(white: 0.5, alpha: 0.8).setStroke()
             let c = NSBezierPath(ovalIn: NSRect(x: p.x - o.eraserRadius, y: p.y - o.eraserRadius, width: 2 * o.eraserRadius, height: 2 * o.eraserRadius))
             c.lineWidth = 2; c.stroke()
         }
-        guard !hideBar else { return }
+        guard !hideBar, needsToDraw(barRect) else { return }
         NSColor(white: 0.12, alpha: o.overlay ? 0.88 : 1).setFill()
         NSBezierPath(roundedRect: barRect, xRadius: o.overlay ? 14 : 0, yRadius: o.overlay ? 14 : 0).fill()
         for it in items() {
@@ -1823,6 +1844,9 @@ final class Sketch: NSObject {
     var strokes: [Stroke] = [], nextID = 0
     var fingers: [Int: Int] = [:]          // finger -> stroke id; -1 on the bar, -2 erasing
     var eraserPoints: [Int: CGPoint] = [:]
+    var predicted: [Int: CGPoint] = [:]    // stroke id -> predicted tip, drawn but not kept
+    var velocity: [Int: (v: CGVector, t: Double)] = [:]   // stroke id -> smoothed points per second
+    var draws = 0, drawTime = 0.0
     var clearFinger: Int?, clearHint = 0.0, savedUntil = 0.0
     let eraserRadius: CGFloat = 26
     var hasFingers: Bool { !fingers.isEmpty }
@@ -1833,6 +1857,7 @@ final class Sketch: NSObject {
         guard window == nil, let s = screen(for: targetDisplay()) ?? NSScreen.main else { return }
         endGesture()
         overlay = o; drawing = true; eraser = false; strokes = []; fingers = [:]; eraserPoints = [:]
+        predicted = [:]; velocity = [:]; draws = 0; drawTime = 0
         pen = o ? 2 : (light ? 0 : 1)   // red over the screen; black or white on the board
         let w = CalibrationWindow(contentRect: s.frame, styleMask: .borderless, backing: .buffered, defer: false)
         w.level = .screenSaver
@@ -1842,6 +1867,7 @@ final class Sketch: NSObject {
         w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         let v = SketchView(frame: NSRect(origin: .zero, size: s.frame.size))
         v.owner = self
+        v.wantsLayer = true; v.layerContentsRedrawPolicy = .onSetNeedsDisplay
         w.contentView = v
         w.setFrame(s.frame, display: true)
         window = w; view = v
@@ -1860,7 +1886,7 @@ final class Sketch: NSObject {
         redraw?.invalidate(); redraw = nil
         window?.orderOut(nil)
         window = nil; view = nil; fingers = [:]; capturing = false
-        log("drawing closed")
+        log("drawing closed" + (draws > 0 ? String(format: " (%d redraws, %.1f ms average)", draws, drawTime / Double(draws) * 1000) : ""))
     }
 
     func local(_ g: CGPoint) -> CGPoint {
@@ -1873,34 +1899,79 @@ final class Sketch: NSObject {
     // Called once per HID report while capturing, with every touching finger: slot -> global point.
     func feed(_ touches: [Int: CGPoint]) {
         guard let v = view else { return }
+        var dirty = CGRect.null, all = false
+        func mark(_ r: CGRect) { dirty = dirty.union(r) }
+        func unpredict(_ id: Int) {
+            if let tip = predicted.removeValue(forKey: id), let s = strokes.last(where: { $0.id == id }) { mark(Stroke.around(s.points[s.points.count - 1], tip, s.width)) }
+        }
         for (f, g) in touches {
             let p = local(g)
             if let id = fingers[f] {
-                if id == -2 { erase(at: p); eraserPoints[f] = p }
-                else if id >= 0, let i = strokes.lastIndex(where: { $0.id == id }) { strokes[i].points.append(p) }
+                if id == -2 {
+                    if let old = eraserPoints[f] { mark(eraserRing(old)) }
+                    mark(erase(at: p)); mark(eraserRing(p)); eraserPoints[f] = p
+                } else if id >= 0, let i = strokes.lastIndex(where: { $0.id == id }) {
+                    unpredict(id)
+                    let last = strokes[i].points[strokes[i].points.count - 1]
+                    guard p != last else { continue }
+                    mark(strokes[i].add(p))
+                    predict(i, from: last, to: p)
+                    if let tip = predicted[id] { mark(Stroke.around(p, tip, strokes[i].width)) }
+                }
                 continue
             }
             declareUserActivity()
             if v.barRect.contains(p) {
-                fingers[f] = -1
+                fingers[f] = -1; all = true
                 if let it = v.items().first(where: { $0.rect.contains(p) }) { if !barTool(it.tool, f) { return } }
             } else if eraser {
-                fingers[f] = -2; eraserPoints[f] = p; erase(at: p)
+                fingers[f] = -2; eraserPoints[f] = p; mark(erase(at: p)); mark(eraserRing(p))
             } else {
-                strokes.append(Stroke(id: nextID, points: [p], color: penColor(pen), width: penWidths[size]))
-                fingers[f] = nextID; nextID += 1
+                let s = Stroke(id: nextID, at: p, color: penColor(pen), width: penWidths[size])
+                strokes.append(s); mark(s.bounds)
+                fingers[f] = nextID; velocity[nextID] = (CGVector.zero, now()); nextID += 1
             }
         }
         for f in fingers.keys where touches[f] == nil {
+            if let id = fingers[f], id >= 0 { unpredict(id); velocity[id] = nil }
+            if let old = eraserPoints[f] { mark(eraserRing(old)) }
             fingers[f] = nil; eraserPoints[f] = nil
-            if clearFinger == f { clearFinger = nil; clearHint = now() + 1.5 }   // lifted before the hold finished
+            if clearFinger == f { clearFinger = nil; clearHint = now() + 1.5; all = true }   // lifted before the hold finished
         }
-        v.needsDisplay = true
+        if all { v.needsDisplay = true } else if !dirty.isNull { v.setNeedsDisplay(dirty) }
     }
 
-    func erase(at p: CGPoint) {
+    // Extend the stroke to where the finger should be about inkPredict ms from now, from its smoothed
+    // velocity. It hides part of the digitizer's and the screen's delay; the guess is replaced by the
+    // real point on the next report, and capped so a sudden stop can't fling a long line.
+    func predict(_ i: Int, from a: CGPoint, to b: CGPoint) {
+        let id = strokes[i].id, t = now()
+        let (old, t0) = velocity[id] ?? (CGVector.zero, t)
+        let dt = max(t - t0, 0.002)
+        let raw = CGVector(dx: (b.x - a.x) / dt, dy: (b.y - a.y) / dt)
+        let k = old == .zero ? 1 : 0.5
+        let v = CGVector(dx: old.dx + k * (raw.dx - old.dx), dy: old.dy + k * (raw.dy - old.dy))
+        velocity[id] = (v, t)
+        guard cfg.inkPredict > 0, dt < 0.1 else { return }
+        var d = CGVector(dx: v.dx * cfg.inkPredict / 1000, dy: v.dy * cfg.inkPredict / 1000)
+        let len = hypot(d.dx, d.dy), cap: CGFloat = 40
+        if len < 1 { return }
+        if len > cap { d = CGVector(dx: d.dx * cap / len, dy: d.dy * cap / len) }
+        predicted[id] = CGPoint(x: b.x + d.dx, y: b.y + d.dy)
+    }
+
+    func eraserRing(_ p: CGPoint) -> CGRect { CGRect(x: p.x, y: p.y, width: 0, height: 0).insetBy(dx: -eraserRadius - 3, dy: -eraserRadius - 3) }
+
+    // Removes the strokes under the eraser; returns the area they covered.
+    func erase(at p: CGPoint) -> CGRect {
         let r2 = eraserRadius * eraserRadius
-        strokes.removeAll { s in s.points.contains { ($0.x - p.x) * ($0.x - p.x) + ($0.y - p.y) * ($0.y - p.y) < r2 } }
+        var gone = CGRect.null
+        strokes.removeAll { s in
+            guard s.bounds.insetBy(dx: -eraserRadius, dy: -eraserRadius).contains(p),
+                  s.points.contains(where: { ($0.x - p.x) * ($0.x - p.x) + ($0.y - p.y) * ($0.y - p.y) < r2 }) else { return false }
+            gone = gone.union(s.bounds); return true
+        }
+        return gone
     }
 
     func barTool(_ t: SketchTool, _ finger: Int) -> Bool {
