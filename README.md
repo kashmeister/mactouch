@@ -227,8 +227,8 @@ and Done.
 - On screen, **Drawing / Using Mac** switches touches between drawing and working the Mac as usual,
   with the drawing left in place. The bar floats at the top centre and always responds to touch.
 - To feel quicker, the line runs a little ahead of your finger, to where it is predicted to be
-  20 ms later; the guess is corrected on the next touch report. Change it with `--ink-predict=`
-  (milliseconds, 0 turns it off).
+  8 ms later, but not while the finger slows down or turns; the guess is corrected on the next touch
+  report. Change it with `--ink-predict=` (milliseconds, 0 turns it off).
 
 ### Calibration
 
@@ -318,7 +318,7 @@ switches take `=false` to turn them off.
 | `--titlebar=` | `44` | Height in points of the drag zone at the top of each window; `0` turns it off |
 | `--edge=` | `12` | Distance in points from a window edge within which a drag resizes; `0` turns it off |
 | `--ring-color=` | `#FF6A00` | Hold cue ring colour, `#RRGGBB` or `accent` |
-| `--ink-predict=` | `20` | How far ahead, in ms, whiteboard lines are drawn past the finger (0 to 50; 0 is off) |
+| `--ink-predict=` | `8` | How far ahead, in ms, whiteboard lines are drawn past the finger (0 to 50; 0 is off) |
 | `--piano-octaves=` | `3` | Music piano size, 1 to 6 octaves |
 | `--piano-sound=` | `0` | Music piano General MIDI program; the bar lists the built-in choices |
 | `--auto-keyboard` | on | Expand the minimized Accessibility Keyboard for text fields focused by touch |

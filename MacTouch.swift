@@ -37,7 +37,7 @@
 //   --auto-keyboard         expand the minimized Accessibility Keyboard when a touch focuses a text field (default on)
 //   --keep-keyboard         put the Accessibility Keyboard back where it was after the display sleeps (default on)
 //   --ring-color=#FF6A00    hold cue ring colour: #RRGGBB or "accent" (default gauge orange)
-//   --ink-predict=20        whiteboard: draw lines this many ms ahead of the finger (0 to 50, 0 off)
+//   --ink-predict=8         whiteboard: draw lines this many ms ahead of the finger (0 to 50, 0 off)
 //   --piano-octaves=3       piano mode keyboard size (1-6)        --piano-sound=0   General MIDI program
 import AppKit
 import IOKit
@@ -70,7 +70,7 @@ struct Config {
     var pianoOctaves = 3, pianoSound = 0, pianoShift = 0, pianoDynamics = false
     var musicMode = "piano", strumSound = 46, thereminWave = 0, thereminSnap = false, metronomeBPM = 0
     var hold = 0.6, scrollScale = 1.0, zoomScale = 1.0, titlebar = 44.0
-    var zoom = "gesture", swipes = "3", edge = 12.0, ringColor = "#FF6A00", inkPredict = 20.0
+    var zoom = "gesture", swipes = "3", edge = 12.0, ringColor = "#FF6A00", inkPredict = 8.0
     var dragApps = ["AssistiveControl"], zoomKeyApps: [String] = []
 }
 
@@ -1943,7 +1943,8 @@ final class Sketch: NSObject {
 
     // Extend the stroke to where the finger should be about inkPredict ms from now, from its smoothed
     // velocity. It hides part of the digitizer's and the screen's delay; the guess is replaced by the
-    // real point on the next report, and capped so a sudden stop can't fling a long line.
+    // real point on the next report. It stays short, and is skipped while the finger slows down or
+    // turns, where a guess would overshoot.
     func predict(_ i: Int, from a: CGPoint, to b: CGPoint) {
         let id = strokes[i].id, t = now()
         let (old, t0) = velocity[id] ?? (CGVector.zero, t)
@@ -1952,9 +1953,12 @@ final class Sketch: NSObject {
         let k = old == .zero ? 1 : 0.5
         let v = CGVector(dx: old.dx + k * (raw.dx - old.dx), dy: old.dy + k * (raw.dy - old.dy))
         velocity[id] = (v, t)
-        guard cfg.inkPredict > 0, dt < 0.1 else { return }
+        guard cfg.inkPredict > 0, dt < 0.1, old != .zero else { return }
+        let speed = hypot(raw.dx, raw.dy), smooth = hypot(v.dx, v.dy)
+        let turn = (raw.dx * v.dx + raw.dy * v.dy) / max(speed * smooth, 1e-6)   // cosine of the turn
+        guard speed > 0.8 * smooth, turn > 0.9 else { return }
         var d = CGVector(dx: v.dx * cfg.inkPredict / 1000, dy: v.dy * cfg.inkPredict / 1000)
-        let len = hypot(d.dx, d.dy), cap: CGFloat = 40
+        let len = hypot(d.dx, d.dy), cap: CGFloat = 12
         if len < 1 { return }
         if len > cap { d = CGVector(dx: d.dx * cap / len, dy: d.dy * cap / len) }
         predicted[id] = CGPoint(x: b.x + d.dx, y: b.y + d.dy)
