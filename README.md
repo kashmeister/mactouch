@@ -46,6 +46,8 @@ events with CGEvent:
   macOS's handling.
 - **Interfaces without a driver** are opened directly with IOUSBHost, which needs no driver or
   entitlement for an interface nobody has claimed, and their reports are decoded with a known layout.
+  MacTouch also takes such a device from macOS as soon as it appears and configures it without
+  interface drivers, so macOS's HID driver does not get to it first.
   For the CX158: report ID 1, ten 5-byte contact slots (finger-down bit, contact ID, X 0–32767,
   Y 0–20479) and the contact count.
 
@@ -322,6 +324,14 @@ Many errors mean a bad USB 2.0 link: the monitor's built-in hub keeps being rese
 touch controller with it. On the reference setup, moving the cable to the Mac's other USB-C port
 stopped the errors; a different cable or powering the monitor separately can help too. The CX158's
 controller then comes up in digitizer mode, which MacTouch reads directly.
+
+**The CX158 works with one finger only.** Its controller picks a mode each time it powers up. It
+stays in digitizer mode (multi-touch) only if macOS's own HID driver never gets its touch interface;
+otherwise it switches to mouse mode within a second, and only removing power changes that. MacTouch
+takes the USB device from macOS within a few milliseconds of it appearing and sets it up without
+drivers for its interfaces, which kept digitizer mode on 4 of 5 power-ups in testing; MacTouch
+restarts keep it too. If the menu says single touch, unplug the monitor for about 15 seconds and
+plug it back in. (Software cannot power-cycle it: macOS does not give up the monitor's USB hub.)
 
 **Touches land mirrored or rotated.** MacTouch follows the display rotation set in System Settings →
 Displays. 0° and 180° are tested; for 90° or 270°, or a panel mounted differently, use `--swap`,

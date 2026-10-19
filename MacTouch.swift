@@ -2684,19 +2684,29 @@ func rawFormat(for s: io_service_t) -> RawFormat? {
 let ioServiceTerminated: UInt32 = 0xE000_0010   // kIOMessageServiceIsTerminated
 var rawDigitizers: [RawDigitizer] = []
 final class RawDigitizer {
-    let service: io_service_t, format: RawFormat
+    let service: io_service_t, format: RawFormat, entryID: UInt64
     var iface: IOUSBHostInterface?, pipe: IOUSBHostPipe?, packet = 64, failures = 0, closed = false
     var device: TouchDev?
     var label: String { String(format: "%@ %04x:%04x", format.name, format.vid, format.pid) }
-    init(_ s: io_service_t, _ f: RawFormat) { service = s; format = f }
+    init(_ s: io_service_t, _ f: RawFormat) {
+        service = s; format = f
+        var id: UInt64 = 0; IORegistryEntryGetRegistryEntryID(s, &id); entryID = id
+    }
 
-    // macOS's HID driver tries the interface first, so opening is retried for a while.
+    // macOS's HID driver claims the interface within milliseconds and keeps asking for the report
+    // descriptor. If it gets it, the CX158's controller drops back to mouse mode within half a second,
+    // so MacTouch seizes the interface from that driver at once (.deviceSeize; no privileges needed),
+    // which keeps it in digitizer mode. A normal open is the fallback, retried for a while.
     func open(attempt: Int = 0) {
         guard !closed else { return }
+        guard IORegistryEntryInPlane(service, kIOServicePlane) != 0 else { finish(); return }   // replaced meanwhile
         do {
-            let i = try IOUSBHostInterface(__ioService: service, options: [], queue: .main) { [weak self] _, type, _ in
+            let i: IOUSBHostInterface
+            let handler: IOUSBHostInterestHandler = { [weak self] _, type, _ in
                 if type == ioServiceTerminated { DispatchQueue.main.async { self?.close("disconnected") } }
             }
+            do { i = try IOUSBHostInterface(__ioService: service, options: .deviceSeize, queue: .main, interestHandler: handler) }
+            catch { i = try IOUSBHostInterface(__ioService: service, options: [], queue: .main, interestHandler: handler) }
             guard let ep = inEndpoint(i), let p = try? i.copyPipe(withAddress: Int(ep)) else {
                 i.destroy(); log("\(label): no interrupt IN endpoint on interface \(format.interface)"); finish(); return
             }
@@ -2775,17 +2785,117 @@ final class RawDigitizer {
     func finish() { closed = true; IOObjectRelease(service); rawDigitizers.removeAll { $0 === self } }
 }
 
+// Seizing the interface does not work while macOS's HID driver has it, but seizing the whole USB
+// device does: MacTouch takes it from macOS's composite driver as soon as it appears and sets its
+// configuration itself, without matching drivers to the interfaces. macOS's HID driver then never
+// reads the digitizer interface, the controller stays in digitizer mode, and MacTouch opens the
+// interface when it is published again.
+var rawUSBDevices: [IOUSBHostDevice] = []
+var rawDeviceIterator: io_iterator_t = 0
+func rawDevicesArrived(_ it: io_iterator_t) {
+    while case let s = IOIteratorNext(it), s != 0 {
+        guard let f = rawFormats.first(where: { usbProp(s, "idVendor") == $0.vid && usbProp(s, "idProduct") == $0.pid }) else {
+            IOObjectRelease(s); continue
+        }
+        trySeizeRawDevice(s, f, attempt: 0)   // already on rawQueue; takes over the reference to s
+    }
+}
+// macOS's composite driver does not give the device up while it is still starting, and its HID driver
+// can get the descriptor as early as 10 ms in, so the seize is retried every 2 ms for 0.6 s. It runs on
+// its own queue: opening a device blocks while its owner is asked to let go.
+let rawQueue = DispatchQueue(label: "local.mactouch.rawusb")
+func seizeRawDevice(_ s: io_service_t, _ f: RawFormat, attempt: Int) { rawQueue.async { trySeizeRawDevice(s, f, attempt: attempt) } }
+func trySeizeRawDevice(_ s: io_service_t, _ f: RawFormat, attempt: Int) {   // on rawQueue
+    do {
+        let label = String(format: "%@ %04x:%04x", f.name, f.vid, f.pid)
+        guard IORegistryEntryInPlane(s, kIOServicePlane) != 0 else { IOObjectRelease(s); return }   // gone already
+        var dev: IOUSBHostDevice?
+        do {
+            dev = try IOUSBHostDevice(__ioService: s, options: .deviceSeize, queue: rawQueue) { _, type, _ in
+                guard type == ioServiceTerminated else { return }
+                DispatchQueue.main.async { rawUSBDevices.removeAll { $0 === dev }; dev?.destroy(); dev = nil }
+            }
+            guard let d = dev else { IOObjectRelease(s); return }
+            // macOS's composite driver may already have set the configuration and let go, leaving its
+            // HID driver on the interfaces: unconfigure first, which removes them, then configure again
+            // without matching drivers to the new interfaces.
+            let value = Int(d.configurationDescriptor?.pointee.bConfigurationValue ?? 1)
+            try? d.__configure(withValue: 0, matchInterfaces: false)
+            try d.__configure(withValue: value, matchInterfaces: false)
+            DispatchQueue.main.async {
+                rawUSBDevices.append(d)
+                log("\(label): took its USB device from macOS after \(attempt * 2) ms, so macOS's HID driver leaves the digitizer alone")
+                openRawInterface(of: s, f, attempt: 0)
+            }
+        } catch {
+            let tookIt = dev != nil
+            dev?.destroy(); dev = nil
+            if tookIt {   // seized but could not configure it: do not keep reconfiguring the device
+                DispatchQueue.main.async { log("\(label): took its USB device but could not configure it (\(error.localizedDescription)); trying the interface instead") }
+                IOObjectRelease(s)
+            } else if attempt < 300 {
+                rawQueue.asyncAfter(deadline: .now() + 0.002) { seizeRawDevice(s, f, attempt: attempt + 1) }
+            } else {
+                DispatchQueue.main.async { log("\(label): macOS would not give up its USB device (\(error.localizedDescription)); trying the interface instead") }
+                IOObjectRelease(s)
+            }
+        }
+    }
+}
+// Interfaces configured without driver matching are not announced, so they are looked up under the device.
+func openRawInterface(of device: io_service_t, _ f: RawFormat, attempt: Int) {
+    var it: io_iterator_t = 0
+    var found = false
+    if IORegistryEntryGetChildIterator(device, kIOServicePlane, &it) == KERN_SUCCESS {
+        while case let c = IOIteratorNext(it), c != 0 {
+            guard IOObjectConformsTo(c, "IOUSBHostInterface") != 0, usbProp(c, "bInterfaceNumber") == f.interface else { IOObjectRelease(c); continue }
+            found = true
+            var id: UInt64 = 0
+            IORegistryEntryGetRegistryEntryID(c, &id)
+            if rawDigitizers.contains(where: { $0.entryID == id && !$0.closed }) { IOObjectRelease(c); continue }
+            let r = RawDigitizer(c, f)
+            rawDigitizers.append(r)
+            r.open()
+        }
+        IOObjectRelease(it)
+    }
+    if !found && attempt < 20 {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { openRawInterface(of: device, f, attempt: attempt + 1) }
+    } else if !found {
+        log(String(format: "%@ %04x:%04x: interface %d did not appear after configuring", f.name, f.vid, f.pid, f.interface))
+        IOObjectRelease(device)
+    } else {
+        IOObjectRelease(device)
+    }
+}
+
 var rawIterator: io_iterator_t = 0
 func watchRawDigitizers() {
     let port = IONotificationPortCreate(kIOMainPortDefault)
     CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(), .defaultMode)
     let arrived: IOServiceMatchingCallback = { _, it in rawInterfacesArrived(it) }
-    if IOServiceAddMatchingNotification(port, kIOFirstMatchNotification, IOServiceMatching("IOUSBHostInterface"),
+    // Publish comes before drivers are matched, the earliest moment to claim the interface.
+    if IOServiceAddMatchingNotification(port, kIOPublishNotification, IOServiceMatching("IOUSBHostInterface"),
                                         arrived, nil, &rawIterator) == KERN_SUCCESS { rawInterfacesArrived(rawIterator) }
+    let devArrived: IOServiceMatchingCallback = { _, it in rawDevicesArrived(it) }
+    // Devices are watched on the seize queue, not the main thread, so the seize starts within a
+    // millisecond of the device appearing. One already connected at launch is taken over too: when
+    // MacTouch quits, the device is left in digitizer mode but without a configuration.
+    let devPort = IONotificationPortCreate(kIOMainPortDefault)
+    IONotificationPortSetDispatchQueue(devPort, rawQueue)
+    rawQueue.sync {
+        if IOServiceAddMatchingNotification(devPort, kIOPublishNotification, IOServiceMatching("IOUSBHostDevice"),
+                                            devArrived, nil, &rawDeviceIterator) == KERN_SUCCESS {
+            rawDevicesArrived(rawDeviceIterator)
+        }
+    }
 }
 func rawInterfacesArrived(_ it: io_iterator_t) {
     while case let s = IOIteratorNext(it), s != 0 {
         guard let f = rawFormat(for: s) else { IOObjectRelease(s); continue }
+        var id: UInt64 = 0
+        IORegistryEntryGetRegistryEntryID(s, &id)
+        if rawDigitizers.contains(where: { $0.entryID == id && !$0.closed }) { IOObjectRelease(s); continue }
         let r = RawDigitizer(s, f)
         rawDigitizers.append(r)
         log("\(r.label): multi-touch interface \(f.interface) appeared")
@@ -2930,7 +3040,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if cfg.paused { return ["Paused"] }
         if probe { return ["Probe mode: logging only"] }
         return touchDevices().map { t in
-            if let d = t.display { return "Touch active: \(t.name) on \(displayName(d))" }
+            // A controller that also has a digitizer mode MacTouch can read (the CX158) but came up as a mouse.
+            let digitizerToo = t.kind == "single" && sameScreen.contains { pair in
+                pair.a == (t.vid, t.pid) && rawFormats.contains { f in f.vid == pair.b.0 && f.pid == pair.b.1 }
+            }
+            if let d = t.display {
+                return "Touch active: \(t.name) on \(displayName(d))" + (digitizerToo ? " (single touch; unplug it for 15 s for multi-touch)" : "")
+            }
             if pairing.device === t { return "\(t.name): touch the orange target to pair it" }
             return t.mode == "single" ? "\(t.name): not paired with a display (Touchscreens ▸ Pair…)"
                                       : "\(t.name): display not found; using the main display"
