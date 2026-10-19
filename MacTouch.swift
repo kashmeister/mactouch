@@ -8,6 +8,7 @@
 //
 // Gestures
 //   tap / double-tap        click / double click
+//   tap, then touch + move  select by word (double-click drag); twice, then touch + move: by line
 //   1 finger, move          drag            (one-finger scroll: scroll)
 //   1 finger, hold          right click     (one-finger scroll: hold+move = drag; hold+lift, or keep
 //                                            holding still another 0.5 s, = right click)
@@ -28,7 +29,7 @@
 //   --display=VEND:MODEL    CoreGraphics vendor:model[:serial] of its display, or "main"; new screens are
 //                           paired by touch instead (falls back to the main display if not connected)
 //   --flip-x --flip-y --swap   extra axis fixes, applied after the display's rotation
-//   --cal=ax,bx,ay,by       error model touched = a*target + b in display fractions; inverted on every point
+//   --cal=ax,bx,ay,by       error model touched = a*target + b in panel fractions (before rotation); inverted on every point
 //   --one-finger-scroll     iPad-style one-finger scrolling (see above)
 //   --two-finger-tap        two-finger tap = right click
 //   --hold=0.6              long-press seconds
@@ -180,7 +181,7 @@ if args.contains("--save") {
             ?? (all.count == 1 ? all.keys.first! : nil)
         guard let id else { fail("several touchscreen profiles exist; say which with --vid (and --pid)") }
         var p = all[id] ?? ["name": "Touch screen", "mode": "auto", "vid": vid ?? 0, "pid": pid, "serial": ""]
-        if forScreen["cal"] != nil, let old = p["cal"] { p["previousCal"] = old }
+        if forScreen["cal"] != nil { p["calPanel"] = true; if let old = p["cal"] { p["previousCal"] = old } }
         for (k, v) in forScreen { p[k] = v }
         all[id] = p; screens = all
     }
@@ -253,6 +254,7 @@ func setCalibration(_ new: [Double], profile: String? = nil) {
     if new != old {
         if let id, screens[id] != nil { setProfile(id, "previousCal", old) } else { defaults.set(old, forKey: "previousCal") }
     }
+    if let id, screens[id] != nil { setProfile(id, "calPanel", true) }
     setSetting("cal", new, profile: id)
 }
 
@@ -304,28 +306,65 @@ struct Axis { var v = 0.0, lo = 0.0, hi = 1.0
     var norm: Double { hi > lo ? min(max((v - lo) / (hi - lo), 0), 1) : 0 } }
 struct Slot { var tip = false, x = Axis(), y = Axis() }
 
-// Panel-native fractions -> display fractions, before calibration. `on` is for pairing a new screen:
-// that display's rotation, without the active screen's axis fixes.
-func frac(_ s: Slot, on d: CGDirectDisplayID? = nil) -> CGPoint {
-    var u = s.x.norm, v = s.y.norm
-    switch Int(CGDisplayRotation(d ?? targetDisplay())) {   // the panel turns with the picture
+// A contact's position in panel fractions: the touch layer's own axes, before rotation.
+func panel(_ s: Slot) -> CGPoint { CGPoint(x: s.x.norm, y: s.y.norm) }
+
+// Panel fractions -> display fractions on d: the panel turns with the picture, then the screen's axis
+// fixes apply (not while pairing a screen whose fixes are not known yet).
+func toDisplay(_ p: CGPoint, _ d: CGDirectDisplayID, fixes: Bool = true) -> CGPoint {
+    var u = p.x, v = p.y
+    switch Int(CGDisplayRotation(d)) {
     case 90: (u, v) = (1 - v, u)
     case 180: (u, v) = (1 - u, 1 - v)
     case 270: (u, v) = (v, 1 - u)
     default: break
     }
-    if d != nil { return CGPoint(x: u, y: v) }
-    if cfg.swap { swap(&u, &v) }
-    if cfg.flipX { u = 1 - u }
-    if cfg.flipY { v = 1 - v }
+    if fixes {
+        if cfg.swap { swap(&u, &v) }
+        if cfg.flipX { u = 1 - u }
+        if cfg.flipY { v = 1 - v }
+    }
     return CGPoint(x: u, y: v)
 }
+// toDisplay is x = A p + c with A a signed permutation; this is its inverse.
+func toPanel(_ x: CGPoint, _ d: CGDirectDisplayID) -> CGPoint {
+    let o = toDisplay(.zero, d), ex = toDisplay(CGPoint(x: 1, y: 0), d), ey = toDisplay(CGPoint(x: 0, y: 1), d)
+    let a = ex.x - o.x, b = ey.x - o.x, c = ex.y - o.y, e = ey.y - o.y, det = a * e - b * c
+    let dx = x.x - o.x, dy = x.y - o.y
+    return CGPoint(x: (e * dx - b * dy) / det, y: (a * dy - c * dx) / det)
+}
+
+// Calibration is kept in panel fractions, so it holds in every rotation: touched = a × target + b per
+// panel axis, inverted on every point.
 func applyCal(_ f: CGPoint, _ c: [Double]) -> CGPoint {
     CGPoint(x: min(max((f.x - c[1]) / c[0], 0), 1), y: min(max((f.y - c[3]) / c[2], 0), 1))
 }
+// MacTouch 3.1.0 and older kept calibration in display fractions, as made in the display's rotation
+// then. Rewritten into panel fractions with the rotation and axis fixes in use now.
+func calToPanel(_ c: [Double], _ d: CGDirectDisplayID) -> [Double] {
+    // Display axis i reads panel axis j, maybe flipped: x_i = p_j or 1 - p_j. Touched display
+    // x = a*t + b becomes touched panel p = a*t' + b, or a*t' + (1 - a - b) when flipped.
+    var out = c
+    let o = toDisplay(.zero, d), ex = toDisplay(CGPoint(x: 1, y: 0), d)
+    for i in 0..<2 {   // display axis i: 0 = x, 1 = y
+        let ai = c[2 * i], bi = c[2 * i + 1]
+        let fromU = i == 0 ? abs(ex.x - o.x) > 0.5 : abs(ex.y - o.y) > 0.5
+        let flipped = (i == 0 ? o.x : o.y) > 0.5
+        let j = fromU ? 0 : 1
+        out[2 * j] = ai; out[2 * j + 1] = flipped ? 1 - ai - bi : bi
+    }
+    return out
+}
+
+// A contact's display fraction on the active screen, calibrated. `on` is for pairing a new screen:
+// that display's rotation, uncalibrated, without axis fixes.
+func frac(_ s: Slot, on d: CGDirectDisplayID? = nil) -> CGPoint {
+    if let d { return toDisplay(panel(s), d, fixes: false) }
+    return toDisplay(applyCal(panel(s), cfg.cal), targetDisplay())
+}
 func toScreen(_ f: CGPoint) -> CGPoint {
-    let b = CGDisplayBounds(targetDisplay()), p = applyCal(f, cfg.cal)
-    return CGPoint(x: (b.minX + p.x * (b.width - 1)).rounded(), y: (b.minY + p.y * (b.height - 1)).rounded())
+    let b = CGDisplayBounds(targetDisplay())
+    return CGPoint(x: (b.minX + f.x * (b.width - 1)).rounded(), y: (b.minY + f.y * (b.height - 1)).rounded())
 }
 
 // Owner of the topmost real window under p. Skips windows that cover the whole display: the Dock,
@@ -384,11 +423,17 @@ enum Mode {
 }
 
 let heldRightClickSecs = 0.5   // one-finger scroll: holding still this long after the hold right-clicks
-let moveTol = 10.0, tapMaxSecs = 0.35, dblSecs = 0.45, dblDist = 24.0, pinchTol = 25.0, zoomKeyStep = log(1.25)
+let moveTol = 10.0, tapMaxSecs = 0.35, dblDist = 60.0, followTol = 20.0, pinchTol = 25.0, zoomKeyStep = log(1.25)
+// A touch-down this soon after a tap, and this close to it, continues it: a double or triple tap, or,
+// if it moves, a double- or triple-click drag (select by word or by line). Fingers land less precisely
+// and come back more slowly than a mouse button, so the window is 0.75 s, or the system's double-click
+// speed if that is slower.
+func dblSecs() -> Double { max(0.75, NSEvent.doubleClickInterval) }
 var slots: [Int: Slot] = [:]   // keyed by finger collection cookie
 var mode = Mode.idle, dirty = false, pressSeq = 0, lastN = 0
 var lastPt = CGPoint.zero, twoStart = CGPoint.zero
 var lastTapTime = 0.0, lastTapPt = CGPoint.zero, clicks: Int64 = 1
+var pressClicks: Int64 = 1, dragClicks: Int64 = 1   // click count of this touch, and of the drag it made
 var accX = 0.0, accY = 0.0
 var pinchStart = 0.0, pinchLast = 0.0, zoomKeyAcc = 0.0
 var inDragApp = false, zoomHere = "gesture"   // decided per gesture from the window under the finger(s)
@@ -408,9 +453,8 @@ var lastTouchTap = 0.0
 func tap(_ p: CGPoint) {
     lastTouchTap = now()
     autoKeyboardTapped()
-    let t = now()
-    clicks = (t - lastTapTime < dblSecs && dist(p, lastTapPt) < dblDist) ? clicks + 1 : 1
-    lastTapTime = t; lastTapPt = p
+    clicks = pressClicks
+    lastTapTime = now(); lastTapPt = p
     post(.mouseMoved, p)
     post(.leftMouseDown, p, clickState: clicks)
     post(.leftMouseUp, p, clickState: clicks)
@@ -424,9 +468,10 @@ func rightClick(_ p: CGPoint, _ why: String) {
     log("right click (\(why)) at \(Int(p.x)),\(Int(p.y))")
 }
 
-func startDrag(_ from: CGPoint, _ to: CGPoint) {
-    post(.leftMouseDown, from); post(.leftMouseDragged, to)
-    mode = .dragging; log("drag start at \(Int(from.x)),\(Int(from.y))")
+func startDrag(_ from: CGPoint, _ to: CGPoint, clicks n: Int64 = 1) {
+    dragClicks = n; lastTapTime = 0   // a tap after this drag starts afresh
+    post(.leftMouseDown, from, clickState: n); post(.leftMouseDragged, to, clickState: n)
+    mode = .dragging; log("drag start\(n > 1 ? " (\(n == 2 ? "double" : "triple")-tap drag: select)" : "") at \(Int(from.x)),\(Int(from.y))")
 }
 
 // Posted events don't count as user activity, so a touch alone would never wake a sleeping display
@@ -437,7 +482,7 @@ func declareUserActivity() {
 }
 
 func endGesture() {   // release anything held, e.g. when pausing or the controller goes away
-    if case .dragging = mode { post(.leftMouseUp, shifted(lastPt)) }
+    if case .dragging = mode { post(.leftMouseUp, shifted(lastPt), clickState: dragClicks) }
     mode = .idle
     holdRing.hide()
 }
@@ -595,7 +640,7 @@ func commit() {
         if case .held = mode {} else { holdRing.hide() }
     }
     if pairing.active { pairing.feed(tipped.first?.value); return }
-    if calibrator.active { calibrator.feed(fracs); return }
+    if calibrator.active { calibrator.feed(tipped.map { panel($0.value) }); return }
     if piano.active {
         piano.feed(Dictionary(uniqueKeysWithValues: slots.filter { $0.value.tip }.map { ($0.key, toScreen(frac($0.value))) }))
         return
@@ -624,7 +669,7 @@ func commit() {
         case .pending(let s, _): tap(s)
         case .held(let s): rightClick(s, "long press")
         case .dragging:
-            post(.leftMouseUp, shifted(lastPt)); log("drag end at \(Int(lastPt.x)),\(Int(lastPt.y))")
+            post(.leftMouseUp, shifted(lastPt), clickState: dragClicks); log("drag end at \(Int(lastPt.x)),\(Int(lastPt.y))")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { rememberKeyboard() }   // the keyboard may have moved
         case .swipe(_, _, let fired): if !fired { log("swipe end (too short)") }
         case .scroll1: log("scroll end (1 finger)")
@@ -646,13 +691,15 @@ func commit() {
             edgeSnap = edgeGrab(p)
             let win = windowAt(p), app = win?.owner ?? ""
             let onTitlebar = win.map { $0.layer == 0 && p.y - $0.frame.minY < cfg.titlebar } ?? false
-            inDragApp = cfg.dragApps.contains(app) || onTitlebar || edgeSnap != nil
-            if inDragApp { log("down in \(app)\(edgeSnap != nil ? " window edge" : onTitlebar ? " title bar" : ""): drag mode") }
+            let onDesktop = win == nil   // nothing to scroll there: select and move icons instead
+            inDragApp = cfg.dragApps.contains(app) || onTitlebar || edgeSnap != nil || onDesktop
+            if inDragApp { log("down \(onDesktop ? "on the desktop" : "in " + app)\(edgeSnap != nil ? " window edge" : onTitlebar ? " title bar" : ""): drag mode") }
+            pressClicks = now() - lastTapTime < dblSecs() && dist(p, lastTapPt) < dblDist ? min(clicks + 1, 3) : 1
             pressSeq += 1
             let seq = pressSeq
             mode = .pending(p, seq)
-            DispatchQueue.main.asyncAfter(deadline: .now() + cfg.hold) {
-                guard case .pending(let s, let q) = mode, q == seq, !inDragApp else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + cfg.hold) {   // a second or third tap never holds
+                guard case .pending(let s, let q) = mode, q == seq, !inDragApp, pressClicks == 1 else { return }
                 if cfg.oneFingerScroll {
                     mode = .held(s); log("hold at \(Int(s.x)),\(Int(s.y))")
                     holdRing.show(at: s, duration: heldRightClickSecs)
@@ -664,10 +711,12 @@ func commit() {
                 } else { rightClick(s, "long press"); mode = .done }
             }
         case .pending(let s, _):
-            if dist(p, s) > moveTol {
+            if dist(p, s) > (pressClicks > 1 ? followTol : moveTol) {   // a second tap may wobble more
                 if let snap = edgeSnap {   // resize: press on the edge, then keep the finger's offset
                     dragOffset = CGPoint(x: snap.x - s.x, y: snap.y - s.y)
                     post(.mouseMoved, snap); startDrag(snap, shifted(p))
+                } else if pressClicks > 1 {   // tap, then touch and move: select by word (or line)
+                    startDrag(lastTapPt, p, clicks: pressClicks)
                 } else if cfg.oneFingerScroll && !inDragApp {
                     mode = .scroll1; accX = 0; accY = 0; scroll(p.x - s.x, p.y - s.y); log("scroll start (1 finger)")
                 } else { startDrag(s, p) }
@@ -675,7 +724,7 @@ func commit() {
         case .held(let s):
             if dist(p, s) > moveTol { startDrag(s, p) }
         case .dragging:
-            if p != lastPt { post(.leftMouseDragged, shifted(p)) }
+            if p != lastPt { post(.leftMouseDragged, shifted(p), clickState: dragClicks) }
         case .scroll1:
             if lastN == 1 { scroll(p.x - lastPt.x, p.y - lastPt.y) }
         default: break   // one finger left over from a two-finger gesture
@@ -963,12 +1012,14 @@ final class Calibrator: NSObject {
         view?.needsDisplay = true
     }
 
-    // Called once per HID report with the contacts' display fractions before calibration.
+    // Called once per report with the contacts in panel fractions, uncalibrated. Targets are shown in
+    // display fractions and fitted in panel fractions, so the calibration holds in every rotation.
     func feed(_ fracs: [CGPoint]) {
         if let f = fracs.first { if down == nil { down = f }; return }
         guard let f = down, let t = currentTarget else { return }
         down = nil
-        samples.append((t, f)); dots.append(applyCal(f, cfg.cal))
+        let d = targetDisplay()
+        samples.append((toPanel(t, d), f)); dots.append(toDisplay(applyCal(f, cfg.cal), d))
         index += 1
         resetIdle()
         if index == targets.count { finish() } else { prompt() }
@@ -985,11 +1036,11 @@ final class Calibrator: NSObject {
         let (ax, bx) = fit(samples.map { $0.target.x }, samples.map { $0.touch.x })
         let (ay, by) = fit(samples.map { $0.target.y }, samples.map { $0.touch.y })
         let new = [ax, bx, ay, by].map { ($0 * 10000).rounded() / 10000 }
-        let b = CGDisplayBounds(targetDisplay())
-        func meanError(_ c: [Double]) -> Double {
+        let d = targetDisplay(), b = CGDisplayBounds(d)
+        func meanError(_ c: [Double]) -> Double {   // in display points
             samples.reduce(0) { s, x in
-                let p = applyCal(x.touch, c)
-                return s + hypot((p.x - x.target.x) * b.width, (p.y - x.target.y) * b.height)
+                let p = toDisplay(applyCal(x.touch, c), d), t = toDisplay(x.target, d)
+                return s + hypot((p.x - t.x) * b.width, (p.y - t.y) * b.height)
             } / Double(samples.count)
         }
         let before = meanError(cfg.cal), after = meanError(new)
@@ -1081,6 +1132,7 @@ final class Pairing: NSObject {
     func start(_ t: TouchDev, _ cands: [CGDirectDisplayID]) {
         endGesture()
         device = t; finished = false; down = nil
+        updateSeize(t)   // a single-touch screen is taken from macOS while it is paired
         let many = cands.count > 1
         message = "MacTouch found a touchscreen: \(t.name).\n"
             + (many ? "Touch the orange target on the screen you are touching." : "Touch the orange target to use it with MacTouch.")
@@ -1146,6 +1198,7 @@ final class Pairing: NSObject {
         idle?.invalidate(); idle = nil
         for w in windows.values { w.orderOut(nil) }
         windows = [:]; targets = [:]; device = nil; finished = false
+        updateSeizes()
         (NSApp.delegate as? AppDelegate)?.updateIcon()
         next()
     }
@@ -2275,6 +2328,8 @@ final class TouchDev {
     let dev: IOHIDDevice?, vid: Int, pid: Int, serial: String, name: String, location: Int, kind: String
     var services: [IOHIDDevice]
     var raw: RawDigitizer?
+    var seized: IOHIDDevice?   // a single-touch screen MacTouch holds exclusively while it drives it
+    var seizeFailed = false
     var profile: String?
     var slots: [Int: Slot] = [:]
     var lastReport = 0.0, touching = false
@@ -2373,12 +2428,68 @@ func findProfile(_ t: TouchDev) -> String? {
 }
 
 func refreshDisplays() {
+    pruneDeadServices()
     for t in devices.values {
         let spec = t.profile.flatMap { screens[$0]?["display"] as? String } ?? ""
         t.display = spec == "main" ? CGMainDisplayID() : spec.isEmpty ? nil : display(for: spec)
     }
     if !pairing.active, let t = pairing.waiting.first(where: isConnected) {
         pairing.request(t)   // a display may have arrived for a screen that is waiting
+    }
+    updateSeizes()
+}
+
+// macOS moves the cursor for an absolute mouse before any event tap sees the events, so while
+// MacTouch drives a single-touch screen it takes the device for itself: a separate reference opened
+// with kIOHIDOptionsTypeSeizeDevice, whose values MacTouch reads instead. macOS then does nothing with
+// it. It is let go when MacTouch stops driving the screen (paused, not paired, display gone, or
+// MacTouch quits), and macOS handles it again. Should seizing fail, the event tap below filters.
+func updateSeize(_ t: TouchDev) {
+    let want = t.kind == "single" && t.mode == "single" && t.driven && !probe && !checkOnly && isConnected(t)
+    if want, t.seized == nil {
+        let svc = t.services.map(IOHIDDeviceGetService).first { IOObjectConformsTo($0, "IOHIDDevice") != 0 }
+            ?? t.dev.map(IOHIDDeviceGetService)
+        guard let svc, let d = IOHIDDeviceCreate(kCFAllocatorDefault, svc) else { return }
+        let r = IOHIDDeviceOpen(d, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
+        guard r == kIOReturnSuccess else {   // retried with every display check; logged once
+            if !t.seizeFailed { log("\(t.label): could not take it from macOS yet (\(hex(UInt32(bitPattern: r)))); filtering its events meanwhile") }
+            t.seizeFailed = true; return
+        }
+        t.seizeFailed = false
+        IOHIDDeviceRegisterInputValueCallback(d, valueCB, nil)
+        IOHIDDeviceScheduleWithRunLoop(d, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+        devices[ObjectIdentifier(d)] = t
+        t.seized = d
+        log("\(t.label): taken from macOS while MacTouch drives it")
+    } else if !want, let d = t.seized {
+        release(t, d)
+        log("\(t.label): handed back to macOS")
+    }
+}
+func release(_ t: TouchDev, _ d: IOHIDDevice) {
+    IOHIDDeviceRegisterInputValueCallback(d, nil, nil)
+    IOHIDDeviceUnscheduleFromRunLoop(d, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+    IOHIDDeviceClose(d, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
+    devices[ObjectIdentifier(d)] = nil
+    t.seized = nil
+}
+func updateSeizes() { for t in uniqueDevices() where t.kind == "single" { updateSeize(t) } }
+
+// macOS does not always send a removal notice for every HID service of a controller that drops off
+// the bus or switches mode. Services that have left the registry are dropped here instead, so a
+// replugged screen starts afresh rather than carrying a dead service along.
+func alive(_ d: IOHIDDevice) -> Bool { IORegistryEntryInPlane(IOHIDDeviceGetService(d), kIOServicePlane) != 0 }
+func pruneDeadServices() {
+    for t in uniqueDevices() where t.raw == nil {
+        if let s = t.seized, !alive(s) { release(t, s) }
+        let dead = t.services.filter { !alive($0) }
+        guard !dead.isEmpty else { continue }
+        for d in dead { devices[ObjectIdentifier(d)] = nil }
+        t.services.removeAll { !alive($0) }
+        if t.services.isEmpty {
+            for (k, v) in devices where v === t { devices[k] = nil }
+            gone(t)
+        }
     }
 }
 
@@ -2388,6 +2499,18 @@ func activate(_ t: TouchDev) {
     activeProfile = t.profile
     cfg = loadConfig(); cachedDisplay = nil
     log("touch on \(t.label) (\(t.mode)\(t.profile.map { ", profile \($0)" } ?? ""))")
+    migrateCalibration(t)
+}
+// A calibration from 3.1.0 or older is in display fractions; it is rewritten once, in the rotation
+// its display has now (the one it was most likely made in).
+func migrateCalibration(_ t: TouchDev) {
+    guard let id = t.profile, let p = screens[id], p["calPanel"] as? Bool != true, let d = t.display else { return }
+    for key in ["cal", "previousCal"] {
+        if let c = validCal(p[key]) { setProfile(id, key, calToPanel(c, d)) }
+    }
+    setProfile(id, "calPanel", true)
+    cfg = loadConfig()
+    log("\(t.label): calibration rewritten for any rotation (made at \(Int(CGDisplayRotation(d)))°): \(cfg.cal)")
 }
 func engineIdle() -> Bool {
     if case .idle = mode, lastN == 0, !calibrator.active { return true }
@@ -2395,6 +2518,7 @@ func engineIdle() -> Bool {
 }
 
 func attached(_ d: IOHIDDevice) {
+    pruneDeadServices()
     let t = TouchDev(d)
     // A controller can show up as several HID services; their values all count as the first one's.
     if t.kind != "none", t.location != 0, let same = uniqueDevices().first(where: {
@@ -2422,7 +2546,8 @@ func register(_ t: TouchDev) {
         let other = alias.map { $0.a == (t.vid, t.pid) ? $0.b : $0.a }
         let display = other.flatMap { o in screens.values.first { $0["vid"] as? Int == o.0 && $0["pid"] as? Int == o.1 }?["display"] } ?? ""
         var all = screens
-        all[id] = ["name": t.name, "mode": "auto", "vid": t.vid, "pid": t.pid, "serial": t.serial, "display": display,
+        let name = alias == nil ? t.name : "\(t.name) (\(t.kind == "single" ? "mouse mode" : "digitizer mode"))"
+        all[id] = ["name": name, "mode": "auto", "vid": t.vid, "pid": t.pid, "serial": t.serial, "display": display,
                    "oneFingerScroll": t.kind == "single"]   // one finger is all a single-touch screen has to scroll with
         screens = all
         t.profile = id
@@ -2438,6 +2563,7 @@ func register(_ t: TouchDev) {
 func detached(_ d: IOHIDDevice) {
     guard let t = devices.removeValue(forKey: ObjectIdentifier(d)) else { return }
     t.services.removeAll { CFEqual($0, d) }
+    if t.services.isEmpty, let s = t.seized { release(t, s) }
     if !t.services.isEmpty {   // another of its services remains
         if t.kind != "none" { log("\(t.label): one of its \(t.services.count + 1) HID services went away") }
         return
@@ -2510,7 +2636,7 @@ let tapCB: CGEventTapCallBack = { _, type, event, _ in
     guard event.getIntegerValueField(.eventSourceUnixProcessID) == 0,
           event.getIntegerValueField(.mouseEventSubtype) == 0 else { return Unmanaged.passUnretained(event) }
     let t = now()
-    let touched = devices.values.contains { $0.kind == "single" && ($0.touching || t - $0.lastReport < 0.08) && $0.driven }
+    let touched = devices.values.contains { $0.kind == "single" && $0.seized == nil && ($0.touching || t - $0.lastReport < 0.08) && $0.driven }
     return touched ? nil : Unmanaged.passUnretained(event)
 }
 func startEventTap() {
@@ -2985,6 +3111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let id = kv.count > 1 ? kv[1] as? String : nil
         if key == "paused" { endGesture() }
         setSetting(key, !value(key, id), profile: id)
+        if key == "paused" { updateSeizes() }   // paused screens go back to macOS
         updateIcon()
     }
     @objc func toggleEdge(_ s: NSMenuItem) { setSetting("edge", cfg.edge > 0 ? 0.0 : 12.0) }

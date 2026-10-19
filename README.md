@@ -55,6 +55,7 @@ touched.
 | Gesture | Default | With one-finger scroll |
 |---|---|---|
 | Tap, double-tap | Click, double click | same |
+| Tap, then touch again and move | Select by word (a double-click drag); after a double tap, by line or paragraph | same |
 | One finger, move | Drag | Scroll |
 | One finger, hold 0.6 s | Right click | Hold then move: drag. Hold then lift, or keep holding still another 0.5 s: right click |
 | Two fingers, move | Scroll | same |
@@ -69,7 +70,10 @@ next 0.5 s. Move while it shows to drag; when it is full, the right click fires.
 under **Hold Ring Color** in the menu; the default is a warm gauge orange.
 
 A tap clicks on lift, at the point where the finger landed, so a hold can still become a right
-click.
+click. A touch that lands within 0.75 s (or the system's double-click speed, if slower) and 60 pt of a
+tap continues it: lifted, it is a double or triple click; moved, it selects by word or
+by line, so text can be selected without turning one-finger scroll off. It may wobble 20 pt before
+it counts as moving, and it never turns into a hold.
 
 Pinch posts the same magnify gesture event as a trackpad, which Safari, Preview, Maps and most
 native apps understand. The event fields are private, the technique used by
@@ -79,6 +83,7 @@ pinch sends ⌘+ / ⌘− instead.
 With one-finger scroll, some places need an immediate drag instead of a scroll. MacTouch looks up
 the window under the finger at touch-down:
 
+- the desktop drags at once, so icons can be selected and moved;
 - the top 44 pt of a normal window (title bar or toolbar) drags at once, so windows move;
 - within 12 pt of a window's side or bottom edge, or just above its top edge, the drag resizes the
   window. Touches scatter by about that much, so MacTouch moves the press onto the edge and keeps
@@ -283,7 +288,8 @@ Fingers land slightly below the point they aim at, and the touch layer may not l
 the picture. **Calibrate Touch…** shows a red cross at 9 positions, twice each, on the screen touched
 last (or **Touchscreens ▸ name ▸ Calibrate…** for a given one). Tap the centre of each one; Esc
 cancels. MacTouch fits a straight line per axis from where the taps landed, saves it in that screen's
-profile, and shows the average error before and after.
+profile, and shows the average error before and after. The calibration is kept in the touch panel's
+own axes, so it stays right when the display is rotated.
 
 On the reference display, calibration moved the mean error from about 17 pt, mostly downward, to
 about 10 pt with no bias. What is left is finger and controller scatter, about ±1 mm. A full affine
@@ -362,7 +368,7 @@ switches take `=false` to turn them off.
 | `--vid=`, `--pid=` | `0x222a`, any | USB IDs of the touch controller whose profile `--save` changes |
 | `--display=VENDOR:MODEL` | paired by touch | CoreGraphics vendor and model (optionally `:serial`) of its display, or `main` |
 | `--flip-x`, `--flip-y`, `--swap` | off | Axis fixes applied after the display rotation |
-| `--cal=ax,bx,ay,by` | none | Calibration as `touched = a × target + b`, in fractions of the display; set by the wizard |
+| `--cal=ax,bx,ay,by` | none | Calibration as `touched = a × target + b`, in fractions of the touch panel's own axes (before rotation), so it holds in every rotation; set by the wizard |
 | `--one-finger-scroll` | off | iPad-style one-finger scrolling |
 | `--two-finger-tap` | off | Two-finger tap right clicks |
 | `--hold=` | `0.6` | Long-press time in seconds |
