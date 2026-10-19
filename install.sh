@@ -17,6 +17,11 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 # Earlier versions ran as local.touchbridge.
 if launchctl bootout "gui/$(id -u)/local.touchbridge" 2>/dev/null; then echo "stopped old local.touchbridge"; fi
 rm -f "$HOME/Library/LaunchAgents/local.touchbridge.plist"
+# MacTouch 3.1 drives single-touch screens like the CX158 itself; the separate cx158-touch-warp agent
+# would remap the same touches a second time. Its plist goes to the Trash; its folder is left alone.
+if launchctl bootout "gui/$(id -u)/local.cx158-touch-warp" 2>/dev/null; then echo "stopped cx158-touch-warp (MacTouch handles the CX158 now)"; fi
+WARP="$HOME/Library/LaunchAgents/local.cx158-touch-warp.plist"
+if [ -f "$WARP" ]; then mv "$WARP" "$HOME/.Trash/local.cx158-touch-warp.$(date +%Y%m%d%H%M%S).plist"; fi
 
 mkdir -p "$HOME/Applications" "$(dirname "$PLIST")" "$(dirname "$LOG")"
 rm -rf "$APP"

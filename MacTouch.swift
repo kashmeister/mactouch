@@ -1,6 +1,10 @@
-// MacTouch: drive a HID multi-touch digitizer (default: the ILITEK controller in Wisecoco touch
-// displays, USB 222a:0001) as mouse, scroll and pinch-zoom input on macOS, which has no touchscreen
-// driver of its own. Runs as a menu bar app; settings live in the defaults domain local.mactouch.
+// MacTouch: drive USB touchscreens as mouse, scroll and pinch-zoom input on macOS, which has no
+// touchscreen driver of its own. Three kinds are handled, told apart when they attach: HID multi-touch
+// digitizers (e.g. the ILITEK controller in Wisecoco displays, USB 222a:0001), single-touch screens that
+// macOS drives as an absolute mouse (e.g. the CX158 in mouse mode, 0416:c169), and multi-touch
+// interfaces macOS attaches no driver to, read directly over USB (the CX158 in digitizer mode,
+// eeef:2828). Each touchscreen keeps a profile: its display, calibration and screen settings.
+// Runs as a menu bar app; settings live in the defaults domain local.mactouch.
 //
 // Gestures
 //   tap / double-tap        click / double click
@@ -14,13 +18,15 @@
 //   window edge, move       resize the window (a touch near an edge is moved onto it)
 //
 // Command line (settings options apply to this run only, unless --save is given)
-//   --check                 print displays, touch device, permissions and settings, then exit
+//   --check                 print displays, touchscreens, profiles, permissions and settings, then exit
 //   --save [options]        store the given settings and exit     --reset   forget all settings and exit
 //   --probe                 log contacts only, post no events     --raw     log every HID value
-// Settings options (numbers may be decimal or 0x-hex; booleans take =false to turn off)
+// Settings options (numbers may be decimal or 0x-hex; booleans take =false to turn off). The screen
+// settings (--vid, --pid, --display, axis fixes, --cal, --one-finger-scroll, --hold) belong to a
+// touchscreen's profile: --save stores them in the profile for --vid/--pid, or in the only profile.
 //   --vid=0x222a --pid=N    USB IDs of the touch controller (pid 0 or omitted: any)
-//   --display=VEND:MODEL    CoreGraphics vendor:model of the touch display (default 0x2613:0x2023),
-//                           or "main"; falls back to the main display if not connected
+//   --display=VEND:MODEL    CoreGraphics vendor:model[:serial] of its display, or "main"; new screens are
+//                           paired by touch instead (falls back to the main display if not connected)
 //   --flip-x --flip-y --swap   extra axis fixes, applied after the display's rotation
 //   --cal=ax,bx,ay,by       error model touched = a*target + b in display fractions; inverted on every point
 //   --one-finger-scroll     iPad-style one-finger scrolling (see above)
@@ -42,6 +48,7 @@
 import AppKit
 import IOKit
 import IOKit.hid
+import IOUSBHost
 import IOKit.pwr_mgt
 import ApplicationServices
 import AVFoundation
@@ -57,6 +64,7 @@ func fail(_ s: String) -> Never { FileHandle.standardError.write((s + "\n").data
 func hex(_ v: UInt32) -> String { "0x" + String(v, radix: 16) }
 func now() -> Double { ProcessInfo.processInfo.systemUptime }
 func dist(_ a: CGPoint, _ b: CGPoint) -> Double { hypot(a.x - b.x, a.y - b.y) }
+extension String { func ifEmpty(_ s: String) -> String { isEmpty ? s : self } }
 let logPath = NSHomeDirectory() + "/Library/Logs/MacTouch.log"
 let repoURL = "https://github.com/kashmeister/mactouch"
 
@@ -125,24 +133,83 @@ let checkOnly = args.contains("--check"), probe = args.contains("--probe"), raw 
 let defaults = UserDefaults.standard
 if args.contains("--reset") {
     for o in options { defaults.removeObject(forKey: o.key) }
-    for k in ["paused", "previousCal", "keyboardPositions"] { defaults.removeObject(forKey: k) }
+    for k in ["paused", "previousCal", "keyboardPositions", "screens"] { defaults.removeObject(forKey: k) }
     print("settings reset"); exit(0)
 }
+
+// MARK: touchscreen profiles
+
+// Each touchscreen MacTouch has met keeps a profile in the defaults key "screens", keyed by an id
+// such as "222a:0001". A profile matches a HID device by vid, pid (0: any) and serial ("": any) and
+// holds what belongs to that screen: its display, calibration, axis fixes, one-finger scroll, long
+// press and mode (auto, multi, single, or ignore for a device that is not a touchscreen). Everything
+// else is global. cfg is the global settings overlaid with the active screen's profile.
+let profileKeys: Set<String> = ["display", "cal", "previousCal", "flipX", "flipY", "swap", "oneFingerScroll", "hold"]
+var screens: [String: [String: Any]] {
+    get { defaults.dictionary(forKey: "screens") as? [String: [String: Any]] ?? [:] }
+    set { defaults.set(newValue, forKey: "screens") }
+}
+func profileName(_ id: String) -> String { screens[id]?["name"] as? String ?? id }
+func profileMode(_ id: String?) -> String { id.flatMap { screens[$0]?["mode"] as? String } ?? "auto" }
+func setProfile(_ id: String, _ key: String, _ value: Any?) {
+    var all = screens, p = all[id] ?? [:]
+    p[key] = value
+    all[id] = p; screens = all
+}
+
+// 3.0 and older kept one touchscreen's settings at the top level; they become its profile once. The
+// old keys stay, so an older MacTouch still finds them.
+if defaults.object(forKey: "screens") == nil {
+    var p: [String: Any] = ["name": "Touch screen", "mode": "auto", "vid": defaults.object(forKey: "vid") as? Int ?? 0x222A,
+                            "pid": defaults.object(forKey: "pid") as? Int ?? 0, "serial": ""]
+    for k in profileKeys { if let v = defaults.object(forKey: k) { p[k] = v } }
+    if p["display"] == nil { p["display"] = Config().display }
+    screens = [String(format: "%04x:%04x", p["vid"] as! Int, p["pid"] as! Int): p]
+}
+
+// --save with screen settings stores them in the profile for --vid/--pid (made if missing), or in the
+// only profile when no vid is given.
 if args.contains("--save") {
-    if overrides["cal"] != nil, let old = defaults.array(forKey: "cal") { defaults.set(old, forKey: "previousCal") }
-    for (k, v) in overrides { defaults.set(v, forKey: k) }
+    let deviceKeys = profileKeys.union(["vid", "pid"])
+    let forScreen = overrides.filter { deviceKeys.contains($0.key) }
+    if !forScreen.isEmpty {
+        let vid = forScreen["vid"] as? Int, pid = forScreen["pid"] as? Int ?? 0
+        var all = screens
+        let id = vid.map { v in all.first { ($0.value["vid"] as? Int) == v && ($0.value["pid"] as? Int ?? 0) == pid }?.key
+                                ?? String(format: "%04x:%04x", v, pid) }
+            ?? (all.count == 1 ? all.keys.first! : nil)
+        guard let id else { fail("several touchscreen profiles exist; say which with --vid (and --pid)") }
+        var p = all[id] ?? ["name": "Touch screen", "mode": "auto", "vid": vid ?? 0, "pid": pid, "serial": ""]
+        if forScreen["cal"] != nil, let old = p["cal"] { p["previousCal"] = old }
+        for (k, v) in forScreen { p[k] = v }
+        all[id] = p; screens = all
+    }
+    for (k, v) in overrides where !profileKeys.contains(k) && k != "vid" && k != "pid" { defaults.set(v, forKey: k) }
     print("saved: " + overrides.keys.sorted().joined(separator: ", ")); exit(0)
 }
 defaults.setVolatileDomain(overrides, forName: UserDefaults.argumentDomain)
 
+var activeProfile: String?   // profile of the touchscreen that is being touched (or was last)
+
 func loadConfig() -> Config {
     var c = Config()
     func rd<T>(_ k: String, _ p: WritableKeyPath<Config, T>) { if let v = defaults.object(forKey: k) as? T { c[keyPath: p] = v } }
-    rd("vid", \.vid); rd("pid", \.pid); rd("display", \.display)
-    rd("flipX", \.flipX); rd("flipY", \.flipY); rd("swap", \.swap); rd("cal", \.cal)
-    rd("oneFingerScroll", \.oneFingerScroll); rd("twoFingerTap", \.twoFingerTap)
+    if let id = activeProfile, let p = screens[id] {   // the screen's own values; this run's options still win
+        let run = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+        func pr<T>(_ k: String, _ kp: WritableKeyPath<Config, T>) {
+            if let v = (run[k] ?? p[k]) as? T { c[keyPath: kp] = v }
+        }
+        pr("vid", \.vid); pr("pid", \.pid); pr("display", \.display)
+        pr("flipX", \.flipX); pr("flipY", \.flipY); pr("swap", \.swap); pr("cal", \.cal)
+        pr("oneFingerScroll", \.oneFingerScroll); pr("hold", \.hold)
+    } else {   // no touchscreen yet: the top-level values (as set by 3.0 and older)
+        rd("vid", \.vid); rd("pid", \.pid); rd("display", \.display)
+        rd("flipX", \.flipX); rd("flipY", \.flipY); rd("swap", \.swap); rd("cal", \.cal)
+        rd("oneFingerScroll", \.oneFingerScroll); rd("hold", \.hold)
+    }
+    rd("twoFingerTap", \.twoFingerTap)
     rd("invertScroll", \.invertScroll); rd("paused", \.paused); rd("keepKeyboard", \.keepKeyboard)
-    rd("hold", \.hold); rd("scrollScale", \.scrollScale); rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
+    rd("scrollScale", \.scrollScale); rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
     rd("ringColor", \.ringColor); rd("zoom", \.zoom); rd("swipes", \.swipes); rd("edge", \.edge); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
     rd("pianoOctaves", \.pianoOctaves); rd("pianoSound", \.pianoSound); rd("pianoShift", \.pianoShift); rd("pianoDynamics", \.pianoDynamics)
     rd("musicMode", \.musicMode); rd("strumSound", \.strumSound); rd("thereminWave", \.thereminWave)
@@ -155,23 +222,38 @@ func loadConfig() -> Config {
 var cfg = loadConfig()
 
 // Store a setting from the menu; it also beats any command-line value for the rest of this run.
-func setSetting(_ key: String, _ value: Any) {
-    defaults.set(value, forKey: key)
+// Screen settings go to the given profile, else the active one.
+func setSetting(_ key: String, _ value: Any, profile: String? = nil) {
+    if profileKeys.contains(key), let id = profile ?? activeProfile, screens[id] != nil {
+        setProfile(id, key, value)
+        log("set \(key) = \(value) for \(profileName(id))")
+    } else {
+        defaults.set(value, forKey: key)
+        log("set \(key) = \(value)")
+    }
     var vol = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
     vol.removeValue(forKey: key)
     defaults.setVolatileDomain(vol, forName: UserDefaults.argumentDomain)
     cfg = loadConfig()
-    log("set \(key) = \(value)")
 }
 
 // Every calibration change keeps the one it replaces, so Undo Calibration can switch back.
-var previousCal: [Double]? {
-    let v = defaults.array(forKey: "previousCal") as? [Double]
-    return v?.count == 4 && v![0] != 0 && v![2] != 0 ? v : nil
+func validCal(_ v: Any?) -> [Double]? {
+    let c = v as? [Double]
+    return c?.count == 4 && c![0] != 0 && c![2] != 0 ? c : nil
 }
-func setCalibration(_ new: [Double]) {
-    if new != cfg.cal { defaults.set(cfg.cal, forKey: "previousCal") }
-    setSetting("cal", new)
+func calibration(_ id: String?) -> [Double] {
+    id.flatMap { validCal(screens[$0]?["cal"]) } ?? (id == nil ? cfg.cal : identityCal)
+}
+func previousCal(_ id: String?) -> [Double]? {
+    validCal(id.flatMap { screens[$0]?["previousCal"] } ?? defaults.array(forKey: "previousCal"))
+}
+func setCalibration(_ new: [Double], profile: String? = nil) {
+    let id = profile ?? activeProfile, old = calibration(id)
+    if new != old {
+        if let id, screens[id] != nil { setProfile(id, "previousCal", old) } else { defaults.set(old, forKey: "previousCal") }
+    }
+    setSetting("cal", new, profile: id)
 }
 
 // MARK: target display
@@ -181,16 +263,26 @@ func onlineDisplays() -> [CGDirectDisplayID] {
     CGGetOnlineDisplayList(16, &ids, &n)
     return Array(ids.prefix(Int(n)))
 }
-func isTarget(_ d: CGDirectDisplayID) -> Bool {
-    let p = cfg.display.split(separator: ":")
-    guard p.count == 2, let v = num(p[0]), let m = num(p[1]) else { return false }
+// A display spec is "VEND:MODEL", or "VEND:MODEL:SERIAL" to tell two identical monitors apart.
+func matches(_ spec: String, _ d: CGDirectDisplayID) -> Bool {
+    let p = spec.split(separator: ":")
+    guard p.count >= 2, let v = num(p[0]), let m = num(p[1]) else { return false }
+    if p.count > 2, let s = num(p[2]), s != 0, CGDisplaySerialNumber(d) != UInt32(s) { return false }
     return CGDisplayVendorNumber(d) == UInt32(v) && CGDisplayModelNumber(d) == UInt32(m)
 }
+func spec(of d: CGDirectDisplayID) -> String {
+    let s = CGDisplaySerialNumber(d)
+    return "\(hex(CGDisplayVendorNumber(d))):\(hex(CGDisplayModelNumber(d)))" + (s != 0 ? ":\(hex(s))" : "")
+}
+func display(for spec: String) -> CGDirectDisplayID? { onlineDisplays().first { matches(spec, $0) } }
+func displayName(_ d: CGDirectDisplayID) -> String { screen(for: d)?.localizedName ?? "display \(d)" }
+func isTarget(_ d: CGDirectDisplayID) -> Bool { matches(cfg.display, d) }
 var cachedDisplay: CGDirectDisplayID?, targetFound = false, lastLookup = 0.0
 func targetDisplay() -> CGDirectDisplayID {
     // A fallback is retried every 2 s: around display sleep and wake the touch display can be
-    // briefly missing, and a reconfiguration notice may not follow.
-    if let d = cachedDisplay, targetFound || now() - lastLookup < 2 { return d }
+    // briefly missing, and a reconfiguration notice may not follow. A found display is checked too,
+    // in case it went away without a notice.
+    if let d = cachedDisplay, (targetFound && (cfg.display == "main" || CGDisplayIsOnline(d) != 0)) || now() - lastLookup < 2 { return d }
     lastLookup = now()
     let d = cfg.display == "main" ? nil : onlineDisplays().first(where: isTarget)
     let found = d != nil || cfg.display == "main", use = d ?? CGMainDisplayID()
@@ -212,15 +304,17 @@ struct Axis { var v = 0.0, lo = 0.0, hi = 1.0
     var norm: Double { hi > lo ? min(max((v - lo) / (hi - lo), 0), 1) : 0 } }
 struct Slot { var tip = false, x = Axis(), y = Axis() }
 
-// Panel-native fractions -> display fractions, before calibration.
-func frac(_ s: Slot) -> CGPoint {
+// Panel-native fractions -> display fractions, before calibration. `on` is for pairing a new screen:
+// that display's rotation, without the active screen's axis fixes.
+func frac(_ s: Slot, on d: CGDirectDisplayID? = nil) -> CGPoint {
     var u = s.x.norm, v = s.y.norm
-    switch Int(CGDisplayRotation(targetDisplay())) {   // the panel turns with the picture
+    switch Int(CGDisplayRotation(d ?? targetDisplay())) {   // the panel turns with the picture
     case 90: (u, v) = (1 - v, u)
     case 180: (u, v) = (1 - u, 1 - v)
     case 270: (u, v) = (v, 1 - u)
     default: break
     }
+    if d != nil { return CGPoint(x: u, y: v) }
     if cfg.swap { swap(&u, &v) }
     if cfg.flipX { u = 1 - u }
     if cfg.flipY { v = 1 - v }
@@ -491,13 +585,16 @@ func pinch(_ d: Double, at c: CGPoint) {
 
 func commit() {
     dirty = false
-    let fracs = slots.sorted { $0.key < $1.key }.filter { $0.value.tip }.map { frac($0.value) }
+    var tipped = slots.sorted { $0.key < $1.key }.filter { $0.value.tip }
+    if profileMode(activeProfile) == "single" { tipped = Array(tipped.prefix(1)) }   // a screen set to single touch
+    let fracs = tipped.map { frac($0.value) }
     let active = fracs.map(toScreen)
     let n = active.count
     defer {
         lastN = n; if n == 1 { lastPt = active[0] }
         if case .held = mode {} else { holdRing.hide() }
     }
+    if pairing.active { pairing.feed(tipped.first?.value); return }
     if calibrator.active { calibrator.feed(fracs); return }
     if piano.active {
         piano.feed(Dictionary(uniqueKeysWithValues: slots.filter { $0.value.tip }.map { ($0.key, toScreen(frac($0.value))) }))
@@ -922,6 +1019,147 @@ final class Calibrator: NSObject {
     }
 }
 let calibrator = Calibrator()
+
+// MARK: pairing a new touchscreen with its display
+
+// A touchscreen without a display in its profile is paired once: every external display without a
+// connected touchscreen shows a target, each at a different spot, and the first touch picks the
+// display whose target it lands nearest (in that display's rotation). A digitizer with exactly one
+// such display is paired without asking. Esc or two idle minutes leave it unpaired; the menu's
+// Pair with Display… asks again, and "Not a Touchscreen" makes MacTouch leave the device alone.
+final class PairingView: NSView {
+    weak var owner: Pairing?
+    var target = CGPoint(x: 0.5, y: 0.5)
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with e: NSEvent) { if e.keyCode == 53 { owner?.cancel() } }   // Esc
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(white: 0.07, alpha: 0.92).setFill(); bounds.fill()
+        guard let o = owner else { return }
+        if !o.finished {
+            let c = NSPoint(x: target.x * bounds.width, y: target.y * bounds.height)
+            NSColor.systemOrange.setStroke()
+            for r in [70.0, 40.0] {
+                let p = NSBezierPath(ovalIn: NSRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)); p.lineWidth = 4; p.stroke()
+            }
+            NSColor.systemOrange.setFill()
+            NSBezierPath(ovalIn: NSRect(x: c.x - 10, y: c.y - 10, width: 20, height: 20)).fill()
+        }
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 20), .foregroundColor: NSColor(white: 0.9, alpha: 1)]
+        let text = o.message as NSString, size = text.boundingRect(with: NSSize(width: bounds.width * 0.8, height: 400),
+                                                                     options: .usesLineFragmentOrigin, attributes: attrs).size
+        text.draw(with: NSRect(x: (bounds.width - size.width) / 2, y: bounds.height * 0.18, width: size.width, height: size.height),
+                  options: .usesLineFragmentOrigin, attributes: attrs)
+    }
+}
+
+final class Pairing: NSObject {
+    var device: TouchDev?
+    var waiting: [TouchDev] = []   // more new screens, or ones waiting for a display
+    var windows: [CGDirectDisplayID: NSWindow] = [:], targets: [CGDirectDisplayID: CGPoint] = [:]
+    var finished = false, message = "", down: Slot?, idle: Timer?
+    var active: Bool { device != nil && !finished }
+
+    func candidates(for t: TouchDev) -> [CGDirectDisplayID] {
+        let taken = Set(devices.values.filter { $0 !== t && $0.mode != "none" }.compactMap(\.display))
+        return onlineDisplays().filter { CGDisplayIsBuiltin($0) == 0 && !taken.contains($0) }
+    }
+
+    func request(_ t: TouchDev) {
+        if device === t { return }
+        if device != nil { if !waiting.contains(where: { $0 === t }) { waiting.append(t) }; return }
+        waiting.removeAll { $0 === t }
+        let cands = candidates(for: t)
+        if cands.isEmpty {   // its display may not have arrived yet
+            log("\(t.label): no display to pair with yet; waiting")
+            waiting.append(t); return
+        }
+        if t.kind == "multi" && cands.count == 1 { pair(t, cands[0], quietly: true); return }
+        start(t, cands)
+    }
+
+    func start(_ t: TouchDev, _ cands: [CGDirectDisplayID]) {
+        endGesture()
+        device = t; finished = false; down = nil
+        let many = cands.count > 1
+        message = "MacTouch found a touchscreen: \(t.name).\n"
+            + (many ? "Touch the orange target on the screen you are touching." : "Touch the orange target to use it with MacTouch.")
+            + "\nEsc: later.   Not a touchscreen? Click the button below."
+        for (i, d) in cands.enumerated() {
+            guard let s = screen(for: d) else { continue }
+            let target = CGPoint(x: (Double(i) + 0.5) / Double(cands.count), y: many && i % 2 == 1 ? 0.62 : 0.45)
+            targets[d] = target
+            let w = CalibrationWindow(contentRect: s.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            w.level = .screenSaver; w.isOpaque = false; w.backgroundColor = .clear
+            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            let v = PairingView(frame: NSRect(origin: .zero, size: s.frame.size))
+            v.owner = self; v.target = target
+            let b = NSButton(title: "Not a Touchscreen", target: self, action: #selector(notTouch))
+            b.bezelStyle = .rounded; b.sizeToFit()
+            b.frame.origin = NSPoint(x: (s.frame.width - b.frame.width) / 2, y: s.frame.height * 0.12)
+            v.addSubview(b)
+            w.contentView = v
+            w.setFrame(s.frame, display: true)
+            windows[d] = w
+        }
+        activate(t)
+        NSApp.activate(ignoringOtherApps: true)
+        for w in windows.values { w.orderFrontRegardless() }
+        if let w = windows.values.first { w.makeKeyAndOrderFront(nil); w.makeFirstResponder(w.contentView) }
+        resetIdle()
+        log("pairing \(t.label) with one of \(cands.count) display(s)")
+    }
+
+    // Called once per report with the screen's contact, if any; the lift decides.
+    func feed(_ s: Slot?) {
+        guard let t = device, !finished else { return }
+        if let s { down = down ?? s; return }
+        guard let s = down else { return }
+        down = nil
+        let best = targets.min { a, b in dist(frac(s, on: a.key), a.value) < dist(frac(s, on: b.key), b.value) }
+        if let d = best?.key { pair(t, d, quietly: false) }
+    }
+
+    func pair(_ t: TouchDev, _ d: CGDirectDisplayID, quietly: Bool) {
+        guard let id = t.profile else { return }
+        setProfile(id, "display", spec(of: d))
+        refreshDisplays()
+        if activeDevice === t { activeProfile = nil; activate(t) }   // reload cfg with the new display
+        log("paired \(t.label) with \(displayName(d)) (\(spec(of: d)))")
+        if quietly { notify("MacTouch", "\(t.name) touches now go to \(displayName(d))."); next(); return }
+        finished = true
+        message = "Done: \(t.name) is paired with \(displayName(d)).\nIf touches land off target, choose "
+            + "Touchscreens ▸ \(t.name) ▸ Calibrate… in the MacTouch menu."
+        for (k, w) in windows where k != d { w.orderOut(nil) }
+        windows[d]?.contentView?.subviews.forEach { $0.removeFromSuperview() }
+        windows[d]?.contentView?.needsDisplay = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in if self?.device === t { self?.close() } }
+    }
+
+    @objc func notTouch() {
+        if let t = device, let id = t.profile { setProfile(id, "mode", "ignore"); log("\(t.label) marked as not a touchscreen") }
+        close()
+    }
+    func cancel() { if let t = device { log("pairing \(t.label) put off") }; close() }
+
+    func close() {
+        idle?.invalidate(); idle = nil
+        for w in windows.values { w.orderOut(nil) }
+        windows = [:]; targets = [:]; device = nil; finished = false
+        (NSApp.delegate as? AppDelegate)?.updateIcon()
+        next()
+    }
+    func next() {
+        guard device == nil, let t = waiting.first(where: { isConnected($0) && !candidates(for: $0).isEmpty })
+        else { return }
+        DispatchQueue.main.async { self.request(t) }
+    }
+    func resetIdle() {
+        idle?.invalidate()
+        idle = Timer.scheduledTimer(withTimeInterval: 120, repeats: false) { [weak self] _ in self?.cancel() }
+    }
+}
+let pairing = Pairing()
 
 // MARK: music mode
 
@@ -2025,49 +2263,448 @@ let sketch = Sketch()
 
 // MARK: HID input
 
-// The controller reports up to 10 contacts, each in its own Finger collection (0x0D/0x22) holding
-// Tip Switch (0x0D/0x42), X (0x01/0x30) and Y (0x01/0x31). Values arrive one by one; all values of
-// a report are delivered in one run loop pass, so commit() runs once per report.
+// Two kinds of touchscreen, told apart by their HID descriptor when they attach:
+//   multi   a digitizer reporting up to 10 contacts, each in its own Finger collection (0x0D/0x22)
+//           holding Tip Switch (0x0D/0x42), X (0x01/0x30) and Y (0x01/0x31); e.g. the Wisecoco's ILITEK
+//   single  an absolute mouse: one contact as absolute X/Y (0x01/0x30, 0x01/0x31) plus button 1
+//           (0x09/0x01); e.g. the CX158's MTouch. macOS drives these itself, so MacTouch filters out
+//           the events macOS makes from them (see the event tap below) and posts its own.
+// Values arrive one by one; all values of a report are delivered in one run loop pass, so commit()
+// runs once per report. A third source, raw USB digitizers (below), feeds whole frames.
+final class TouchDev {
+    let dev: IOHIDDevice?, vid: Int, pid: Int, serial: String, name: String, location: Int, kind: String
+    var services: [IOHIDDevice]
+    var raw: RawDigitizer?
+    var profile: String?
+    var slots: [Int: Slot] = [:]
+    var lastReport = 0.0, touching = false
+    var display: CGDirectDisplayID?   // the profile's display while it is connected
+    init(_ d: IOHIDDevice) {
+        func int(_ k: String) -> Int { (IOHIDDeviceGetProperty(d, k as CFString) as? NSNumber)?.intValue ?? 0 }
+        func str(_ k: String) -> String { IOHIDDeviceGetProperty(d, k as CFString) as? String ?? "" }
+        dev = d; vid = int(kIOHIDVendorIDKey); pid = int(kIOHIDProductIDKey); location = int(kIOHIDLocationIDKey)
+        serial = str(kIOHIDSerialNumberKey).trimmingCharacters(in: .whitespaces)
+        name = str(kIOHIDProductKey).isEmpty ? String(format: "%04x:%04x", vid, pid) : str(kIOHIDProductKey)
+        kind = TouchDev.classify(d, vid: vid)
+        services = [d]
+    }
+    init(raw r: RawDigitizer) {
+        dev = nil; vid = r.format.vid; pid = r.format.pid; name = r.format.name
+        serial = (IORegistryEntrySearchCFProperty(r.service, kIOServicePlane, "kUSBSerialNumberString" as CFString, nil,
+                  IOOptionBits(kIORegistryIterateRecursively | kIORegistryIterateParents)) as? String ?? "").trimmingCharacters(in: .whitespaces)
+        location = usbProp(r.service, "locationID") ?? 0; kind = "multi"; services = []; raw = r
+    }
+    static func classify(_ d: IOHIDDevice, vid: Int) -> String {
+        if vid == 0x05AC { return "none" }   // Apple trackpads and mice
+        let els = IOHIDDeviceCopyMatchingElements(d, nil, IOOptionBits(kIOHIDOptionsTypeNone)) as? [IOHIDElement] ?? []
+        func has(_ page: UInt32, _ usage: UInt32, collection: Bool = false) -> Bool {
+            els.contains { IOHIDElementGetUsagePage($0) == page && IOHIDElementGetUsage($0) == usage
+                           && (IOHIDElementGetType($0) == kIOHIDElementTypeCollection) == collection }
+        }
+        if has(0x0D, 0x22, collection: true) { return "multi" }
+        if has(0x0D, 0x20, collection: true) || has(0x0D, 0x02, collection: true) { return "none" }   // pens
+        let absXY = [0x30, 0x31].allSatisfy { u in
+            els.contains { IOHIDElementGetUsagePage($0) == 1 && IOHIDElementGetUsage($0) == UInt32(u) && !IOHIDElementIsRelative($0) }
+        }
+        return absXY && els.contains { IOHIDElementGetUsagePage($0) == 9 } ? "single" : "none"
+    }
+    var label: String { String(format: "%@ %04x:%04x", name, vid, pid) }
+    var mode: String {   // what MacTouch does with it: multi, single or none
+        if kind == "none" { return "none" }
+        let siblings = uniqueDevices().filter { $0 !== self && $0.vid == vid && $0.location == location && location != 0 }
+        if siblings.contains(where: { $0.kind == "multi" && kind != "multi" }) {
+            return "none"   // a touchscreen's mouse-emulation interface beside its digitizer
+        }
+
+        return profileMode(profile) == "ignore" ? "none" : kind   // "single" on a digitizer: commit() keeps one finger
+    }
+    // Input is used: a digitizer always (unpaired, it touches the main display, as before profiles);
+    // an absolute mouse only once paired with a connected display, or while pairing.
+    var driven: Bool {
+        switch mode {
+        case "multi": return true
+        case "single": return pairing.device === self || (display != nil && !cfg.paused && profile != nil)
+        default: return false
+        }
+    }
+}
+var devices: [ObjectIdentifier: TouchDev] = [:]
+// USB IDs one controller uses in its different modes: the CX158's in mouse mode and in digitizer mode.
+let sameScreen: [(a: (Int, Int), b: (Int, Int))] = [((0x0416, 0xC169), (0xEEEF, 0x2828))]
+
+// Windows sets a touch digitizer up when it attaches: it sets Input Mode (0x0D/0x52) to 2, multi-touch,
+// with surface and button reporting on (0x0D/0x57, 0x0D/0x58). Some controllers stay in mouse emulation
+// without that, so MacTouch does the same. (The CX158's digitizer mode has no Input Mode feature and
+// refuses feature reads; its firmware switches to mouse mode on its own on a Mac.)
+func configureDigitizer(_ t: TouchDev) {
+    guard let dev = t.dev else { return }
+    let els = IOHIDDeviceCopyMatchingElements(dev, nil, IOOptionBits(kIOHIDOptionsTypeNone)) as? [IOHIDElement] ?? []
+    let features = els.filter { IOHIDElementGetType($0) == kIOHIDElementTypeFeature }
+    func name(_ e: IOHIDElement) -> String {
+        "rid \(IOHIDElementGetReportID(e)) \(hex(IOHIDElementGetUsagePage(e)))/\(hex(IOHIDElementGetUsage(e)))"
+    }
+    for e in features where IOHIDElementGetUsagePage(e) == 0x0D {
+        let want: CFIndex
+        switch IOHIDElementGetUsage(e) {
+        case 0x52: want = 2   // Input Mode: multi-touch
+        case 0x57, 0x58: want = 1   // Surface Switch, Button Switch
+        default: continue
+        }
+        let r = IOHIDDeviceSetValue(dev, e, IOHIDValueCreateWithIntegerValue(nil, e, mach_absolute_time(), want))
+        log("\(t.label) set \(name(e)) = \(want): \(r == kIOReturnSuccess ? "ok" : "failed \(hex(UInt32(bitPattern: r)))")")
+    }
+}
+var activeDevice: TouchDev?
+func uniqueDevices() -> [TouchDev] {
+    var seen = Set<ObjectIdentifier>()
+    return devices.values.filter { seen.insert(ObjectIdentifier($0)).inserted }
+}
+func isConnected(_ t: TouchDev) -> Bool { devices.values.contains { $0 === t } }
+func touchDevices() -> [TouchDev] { uniqueDevices().filter { $0.mode != "none" }.sorted { $0.label < $1.label } }
+
+// The profile that best matches a device: same vid, then same pid (or any), then same serial (or any).
+func findProfile(_ t: TouchDev) -> String? {
+    screens.compactMap { id, p -> (String, Int)? in
+        guard p["vid"] as? Int == t.vid else { return nil }
+        let pid = p["pid"] as? Int ?? 0, ser = p["serial"] as? String ?? ""
+        guard pid == 0 || pid == t.pid, ser.isEmpty || t.serial.isEmpty || ser == t.serial else { return nil }
+        return (id, (pid == t.pid ? 2 : 0) + (ser == t.serial && !ser.isEmpty ? 4 : 0))
+    }.max { $0.1 < $1.1 }?.0
+}
+
+func refreshDisplays() {
+    for t in devices.values {
+        let spec = t.profile.flatMap { screens[$0]?["display"] as? String } ?? ""
+        t.display = spec == "main" ? CGMainDisplayID() : spec.isEmpty ? nil : display(for: spec)
+    }
+    if !pairing.active, let t = pairing.waiting.first(where: isConnected) {
+        pairing.request(t)   // a display may have arrived for a screen that is waiting
+    }
+}
+
+func activate(_ t: TouchDev) {
+    activeDevice = t
+    guard activeProfile != t.profile else { return }
+    activeProfile = t.profile
+    cfg = loadConfig(); cachedDisplay = nil
+    log("touch on \(t.label) (\(t.mode)\(t.profile.map { ", profile \($0)" } ?? ""))")
+}
+func engineIdle() -> Bool {
+    if case .idle = mode, lastN == 0, !calibrator.active { return true }
+    return false
+}
+
+func attached(_ d: IOHIDDevice) {
+    let t = TouchDev(d)
+    // A controller can show up as several HID services; their values all count as the first one's.
+    if t.kind != "none", t.location != 0, let same = uniqueDevices().first(where: {
+        $0.vid == t.vid && $0.pid == t.pid && $0.location == t.location && $0.kind == t.kind && $0.serial == t.serial }) {
+        devices[ObjectIdentifier(d)] = same; same.services.append(d)
+        return
+    }
+    devices[ObjectIdentifier(d)] = t
+    guard t.kind != "none" else { return }
+    register(t)
+}
+
+// Give a touchscreen its profile (made on first sight), set it up and pair it if it has no display yet.
+func register(_ t: TouchDev) {
+    if let id = findProfile(t) {
+        t.profile = id
+        if profileName(id) == "Touch screen" && !checkOnly { setProfile(id, "name", t.name) }   // migrated from 3.0
+    } else if checkOnly {
+        return   // --check only looks
+    } else {
+        var id = String(format: "%04x:%04x", t.vid, t.pid), n = 2
+        while screens[id] != nil { id = String(format: "%04x:%04x-%d", t.vid, t.pid, n); n += 1 }
+        // A controller that also shows up under other USB IDs (another mode) is on the same screen.
+        let alias = sameScreen.first { $0.a == (t.vid, t.pid) || $0.b == (t.vid, t.pid) }
+        let other = alias.map { $0.a == (t.vid, t.pid) ? $0.b : $0.a }
+        let display = other.flatMap { o in screens.values.first { $0["vid"] as? Int == o.0 && $0["pid"] as? Int == o.1 }?["display"] } ?? ""
+        var all = screens
+        all[id] = ["name": t.name, "mode": "auto", "vid": t.vid, "pid": t.pid, "serial": t.serial, "display": display,
+                   "oneFingerScroll": t.kind == "single"]   // one finger is all a single-touch screen has to scroll with
+        screens = all
+        t.profile = id
+        log("new touchscreen \(t.label): \(t.kind) touch, profile \(id)")
+    }
+    if t.kind == "multi" && !checkOnly { configureDigitizer(t) }
+    refreshDisplays()
+    log("attached \(t.label): \(t.mode == "none" ? "not used" : t.mode + " touch"), profile \(t.profile ?? "-")"
+        + (t.display.map { " on \(displayName($0))" } ?? ""))
+    if !checkOnly && t.mode != "none" && (screens[t.profile!]?["display"] as? String ?? "").isEmpty { pairing.request(t) }
+}
+
+func detached(_ d: IOHIDDevice) {
+    guard let t = devices.removeValue(forKey: ObjectIdentifier(d)) else { return }
+    t.services.removeAll { CFEqual($0, d) }
+    if !t.services.isEmpty {   // another of its services remains
+        if t.kind != "none" { log("\(t.label): one of its \(t.services.count + 1) HID services went away") }
+        return
+    }
+    gone(t)
+}
+func gone(_ t: TouchDev) {
+    pairing.waiting.removeAll { $0 === t }
+    if pairing.device === t { pairing.close() }
+    if activeDevice === t { endGesture(); slots.removeAll(); lastN = 0; activeDevice = nil }
+    if t.kind != "none" { log("detached \(t.label)") }
+    DispatchQueue.main.async { (NSApp.delegate as? AppDelegate)?.updateIcon() }
+}
+
 let valueCB: IOHIDValueCallback = { _, _, _, value in
     let e = IOHIDValueGetElement(value)
+    guard let t = devices[ObjectIdentifier(IOHIDElementGetDevice(e))], t.kind != "none" else { return }
     let pg = IOHIDElementGetUsagePage(e), u = IOHIDElementGetUsage(e)
     let iv = IOHIDValueGetIntegerValue(value)
     let par = IOHIDElementGetParent(e)
     if raw {
         let pp = par.map { hex(IOHIDElementGetUsagePage($0)) + "/" + hex(IOHIDElementGetUsage($0)) + "#\(IOHIDElementGetCookie($0))" } ?? "-"
-        log("rid=\(IOHIDElementGetReportID(e)) page=\(hex(pg)) usage=\(hex(u)) v=\(iv) parent=\(pp)")
+        log("\(t.name) rid=\(IOHIDElementGetReportID(e)) page=\(hex(pg)) usage=\(hex(u)) v=\(iv) parent=\(pp)")
     }
-    guard let par = par, IOHIDElementGetUsagePage(par) == 0x0D, IOHIDElementGetUsage(par) == 0x22 else { return }
-    let key = Int(IOHIDElementGetCookie(par))
-    var s = slots[key] ?? Slot()
+    t.lastReport = now()
+    guard t.driven else { return }
     let lo = Double(IOHIDElementGetLogicalMin(e)), hi = Double(IOHIDElementGetLogicalMax(e))
-    switch (pg, u) {
-    case (0x0D, 0x42): s.tip = iv != 0
-    case (0x01, 0x30): s.x = Axis(v: Double(iv), lo: lo, hi: hi)
-    case (0x01, 0x31): s.y = Axis(v: Double(iv), lo: lo, hi: hi)
-    default: return
+    if t.kind == "multi" {
+        guard let par = par, IOHIDElementGetUsagePage(par) == 0x0D, IOHIDElementGetUsage(par) == 0x22 else { return }
+        let key = Int(IOHIDElementGetCookie(par))
+        var s = t.slots[key] ?? Slot()
+        switch (pg, u) {
+        case (0x0D, 0x42): s.tip = iv != 0
+        case (0x01, 0x30): s.x = Axis(v: Double(iv), lo: lo, hi: hi)
+        case (0x01, 0x31): s.y = Axis(v: Double(iv), lo: lo, hi: hi)
+        default: return
+        }
+        t.slots[key] = s
+    } else {
+        var s = t.slots[0] ?? Slot()
+        switch (pg, u) {
+        case (0x09, 0x01): s.tip = iv != 0; t.touching = s.tip
+        case (0x01, 0x30): s.x = Axis(v: Double(iv), lo: lo, hi: hi)
+        case (0x01, 0x31): s.y = Axis(v: Double(iv), lo: lo, hi: hi)
+        default: return
+        }
+        t.slots[0] = s
     }
-    slots[key] = s
+    deliver(t)
+}
+
+// One screen drives the gestures at a time: the one whose touch started while nothing was touched.
+func deliver(_ t: TouchDev) {
+    if pairing.active && pairing.device !== t { return }
+    if activeDevice !== t { guard engineIdle() else { return }; activate(t) }
+    slots = t.slots
     if !dirty { dirty = true; DispatchQueue.main.async { commit() } }
 }
 
+// macOS turns an absolute mouse's reports into pointer events on whichever display the cursor is on.
+// While MacTouch drives such a screen, those events are dropped: a hardware event (no posting process),
+// not from a trackpad, while that screen is touched or within 80 ms of its last report. A mouse moved
+// during a touch is dropped too; nothing else is. MacTouch's own events carry its pid and pass.
+var eventTap: CFMachPort?
+let tapCB: CGEventTapCallBack = { _, type, event, _ in
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+        return Unmanaged.passUnretained(event)
+    }
+    guard event.getIntegerValueField(.eventSourceUnixProcessID) == 0,
+          event.getIntegerValueField(.mouseEventSubtype) == 0 else { return Unmanaged.passUnretained(event) }
+    let t = now()
+    let touched = devices.values.contains { $0.kind == "single" && ($0.touching || t - $0.lastReport < 0.08) && $0.driven }
+    return touched ? nil : Unmanaged.passUnretained(event)
+}
+func startEventTap() {
+    guard eventTap == nil, AXIsProcessTrusted() else { return }
+    let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp, .leftMouseDragged, .rightMouseDown,
+                                .rightMouseUp, .rightMouseDragged, .otherMouseDown, .otherMouseUp, .otherMouseDragged]
+    let mask = types.reduce(CGEventMask(0)) { $0 | CGEventMask(1) << $1.rawValue }
+    guard let tap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap, options: .defaultTap,
+                                      eventsOfInterest: mask, callback: tapCB, userInfo: nil) else {
+        log("event tap could not be created; single-touch screens stay with macOS"); return
+    }
+    CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes)
+    CGEvent.tapEnable(tap: tap, enable: true)
+    eventTap = tap
+    log("event tap active")
+}
+
+func notify(_ title: String, _ body: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    p.arguments = ["-e", "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run", title, body]
+    try? p.run()
+}
+
+// MARK: raw USB digitizers
+
+// Some touch controllers have a multi-touch interface that macOS attaches no driver to. The CX158's,
+// in its digitizer mode (USB eeef:2828), stalls the request for its HID report descriptor, so only its
+// keyboard interface gets a driver and touch does nothing. MacTouch opens that interface itself with
+// IOUSBHost (an interface nobody has claimed needs no driver or entitlement) and decodes the reports,
+// whose layout is known: report ID 1, ten 5-byte contact slots (status: bit 0 finger down, bits 1-7
+// contact id; X 0...32767 and Y 0...20479, 16-bit little-endian), and the contact count in the last byte. A
+// frame lists every current contact; a lifted finger is listed once with bit 0 clear.
+struct RawFormat { let vid: Int, pid: Int, interface: Int, reportID: UInt8, slots: Int, maxX: Double, maxY: Double, name: String }
+let rawFormats = [RawFormat(vid: 0xEEEF, pid: 0x2828, interface: 0, reportID: 1, slots: 10, maxX: 32767, maxY: 20479, name: "MTouch")]
+
+func usbProp(_ s: io_service_t, _ k: String) -> Int? {
+    (IORegistryEntrySearchCFProperty(s, kIOServicePlane, k as CFString, nil,
+                                     IOOptionBits(kIORegistryIterateRecursively | kIORegistryIterateParents)) as? NSNumber)?.intValue
+}
+func rawFormat(for s: io_service_t) -> RawFormat? {
+    rawFormats.first { usbProp(s, "idVendor") == $0.vid && usbProp(s, "idProduct") == $0.pid && usbProp(s, "bInterfaceNumber") == $0.interface }
+}
+
+let ioServiceTerminated: UInt32 = 0xE000_0010   // kIOMessageServiceIsTerminated
+var rawDigitizers: [RawDigitizer] = []
+final class RawDigitizer {
+    let service: io_service_t, format: RawFormat
+    var iface: IOUSBHostInterface?, pipe: IOUSBHostPipe?, packet = 64, failures = 0, closed = false
+    var device: TouchDev?
+    var label: String { String(format: "%@ %04x:%04x", format.name, format.vid, format.pid) }
+    init(_ s: io_service_t, _ f: RawFormat) { service = s; format = f }
+
+    // macOS's HID driver tries the interface first, so opening is retried for a while.
+    func open(attempt: Int = 0) {
+        guard !closed else { return }
+        do {
+            let i = try IOUSBHostInterface(__ioService: service, options: [], queue: .main) { [weak self] _, type, _ in
+                if type == ioServiceTerminated { DispatchQueue.main.async { self?.close("disconnected") } }
+            }
+            guard let ep = inEndpoint(i), let p = try? i.copyPipe(withAddress: Int(ep)) else {
+                i.destroy(); log("\(label): no interrupt IN endpoint on interface \(format.interface)"); finish(); return
+            }
+            iface = i; pipe = p
+            let t = TouchDev(raw: self)
+            device = t; devices[ObjectIdentifier(self)] = t
+            log("\(label): reading its multi-touch interface directly (macOS has no driver for it)")
+            register(t)
+            for _ in 0..<4 { read() }   // keep reads queued, so no frame waits for the next request
+            (NSApp.delegate as? AppDelegate)?.updateIcon()
+        } catch {
+            if attempt < 10 { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.open(attempt: attempt + 1) } }
+            else { log("\(label): could not open its interface (\(error.localizedDescription)); a HID driver may have it"); finish() }
+        }
+    }
+
+    // The configuration descriptor holds the interface's endpoints after its interface descriptor.
+    func inEndpoint(_ i: IOUSBHostInterface) -> UInt8? {
+        let cfg = i.configurationDescriptor
+        let d = [UInt8](UnsafeRawBufferPointer(start: UnsafeRawPointer(cfg), count: Int(cfg.pointee.wTotalLength)))
+        var k = 0, current = -1
+        while k + 1 < d.count, d[k] > 0 {
+            if d[k + 1] == 4, k + 2 < d.count { current = Int(d[k + 2]) }
+            if d[k + 1] == 5, current == format.interface, k + 5 < d.count, d[k + 2] & 0x80 != 0, d[k + 3] & 3 == 3 {
+                packet = Int(d[k + 4]) | Int(d[k + 5]) << 8
+                return d[k + 2]
+            }
+            k += Int(d[k])
+        }
+        return nil
+    }
+
+    func read() {
+        guard !closed, let i = iface, let p = pipe, let buf = try? i.ioData(withCapacity: packet) else { return }
+        do {
+            try p.enqueueIORequest(with: buf, completionTimeout: 0) { [weak self] status, n in
+                guard let self, !self.closed else { return }
+                if status == kIOReturnSuccess {
+                    self.failures = 0
+                    self.frame([UInt8]((buf as Data).prefix(n)))
+                    self.read()
+                } else if status != kIOReturnAborted {
+                    self.failures += 1
+                    if self.failures > 40 { self.close("reads keep failing (\(hex(UInt32(bitPattern: status))))"); return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.read() }
+                }
+            }
+        } catch { failures += 1; if failures > 40 { close("reads cannot be queued") } }
+    }
+
+    func frame(_ d: [UInt8]) {
+        guard let t = device, d.count >= 7, d[0] == format.reportID else { return }
+        if raw { log("\(format.name) raw " + d.map { String(format: "%02x", $0) }.joined(separator: " ")) }
+        let count = Int(d[d.count - 1])
+        var s: [Int: Slot] = [:]
+        for k in 0..<min(count, format.slots) {
+            let o = 1 + 5 * k
+            guard o + 4 < d.count - 1 else { break }
+            guard d[o] & 1 == 1 else { continue }   // listed once more as it lifts
+            s[Int(d[o] >> 1)] = Slot(tip: true, x: Axis(v: Double(Int(d[o + 1]) | Int(d[o + 2]) << 8), lo: 0, hi: format.maxX),
+                                     y: Axis(v: Double(Int(d[o + 3]) | Int(d[o + 4]) << 8), lo: 0, hi: format.maxY))
+        }
+        t.slots = s; t.lastReport = now(); t.touching = !s.isEmpty
+        guard t.driven else { return }
+        deliver(t)
+    }
+
+    func close(_ why: String) {
+        guard !closed else { return }
+        closed = true
+        log("\(label): stopped reading (\(why))")
+        if let t = device { devices[ObjectIdentifier(self)] = nil; gone(t) }
+        iface?.destroy(); iface = nil; pipe = nil
+        finish()
+    }
+    func finish() { closed = true; IOObjectRelease(service); rawDigitizers.removeAll { $0 === self } }
+}
+
+var rawIterator: io_iterator_t = 0
+func watchRawDigitizers() {
+    let port = IONotificationPortCreate(kIOMainPortDefault)
+    CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(), .defaultMode)
+    let arrived: IOServiceMatchingCallback = { _, it in rawInterfacesArrived(it) }
+    if IOServiceAddMatchingNotification(port, kIOFirstMatchNotification, IOServiceMatching("IOUSBHostInterface"),
+                                        arrived, nil, &rawIterator) == KERN_SUCCESS { rawInterfacesArrived(rawIterator) }
+}
+func rawInterfacesArrived(_ it: io_iterator_t) {
+    while case let s = IOIteratorNext(it), s != 0 {
+        guard let f = rawFormat(for: s) else { IOObjectRelease(s); continue }
+        let r = RawDigitizer(s, f)
+        rawDigitizers.append(r)
+        log("\(r.label): multi-touch interface \(f.interface) appeared")
+        r.open()
+    }
+}
+
 let mgr = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
-var match: [String: Any] = [kIOHIDVendorIDKey: cfg.vid]
-if cfg.pid != 0 { match[kIOHIDProductIDKey] = cfg.pid }
-IOHIDManagerSetDeviceMatching(mgr, match as CFDictionary)
-func touchDevices() -> [IOHIDDevice] { Array((IOHIDManagerCopyDevices(mgr) as? Set<IOHIDDevice>) ?? []) }
+// Touchscreens, absolute and ordinary mice (sorted out on attach), and every profile's device.
+var matching: [[String: Any]] = [[kIOHIDDeviceUsagePageKey: 0x0D, kIOHIDDeviceUsageKey: 0x04],
+                                 [kIOHIDDeviceUsagePageKey: 0x01, kIOHIDDeviceUsageKey: 0x02],
+                                 [kIOHIDDeviceUsagePageKey: 0x01, kIOHIDDeviceUsageKey: 0x01],
+                                 [kIOHIDVendorIDKey: cfg.vid]]
+for p in screens.values {   // a raw digitizer's vid would only match its keyboard interface
+    if let v = p["vid"] as? Int, !rawFormats.contains(where: { $0.vid == v }) { matching.append([kIOHIDVendorIDKey: v]) }
+}
+IOHIDManagerSetDeviceMatchingMultiple(mgr, matching as CFArray)
 var hidOpen = false
 
 if checkOnly {
+    for d in (IOHIDManagerCopyDevices(mgr) as? Set<IOHIDDevice>) ?? [] { attached(d) }
     for d in onlineDisplays() {
         let b = CGDisplayBounds(d)
-        print("display \(d): vendor \(hex(CGDisplayVendorNumber(d))) model \(hex(CGDisplayModelNumber(d)))",
+        let users = touchDevices().filter { $0.display == d }.map(\.name)
+        print("display \(d): \(spec(of: d))",
               "rotation \(Int(CGDisplayRotation(d))) bounds \(Int(b.minX)),\(Int(b.minY)) \(Int(b.width))x\(Int(b.height))",
-              CGDisplayIsBuiltin(d) != 0 ? "built-in" : "", isTarget(d) ? "<- target" : "")
+              CGDisplayIsBuiltin(d) != 0 ? "built-in" : "", users.isEmpty ? "" : "<- touch: " + users.joined(separator: ", "))
     }
-    let devs = touchDevices()
-    print("touch devices matching vid \(hex(UInt32(cfg.vid)))\(cfg.pid != 0 ? " pid " + hex(UInt32(cfg.pid)) : ""): \(devs.count)")
-    for dev in devs { print("  \(IOHIDDeviceGetProperty(dev, kIOHIDProductKey as CFString) ?? "?" as CFTypeRef)") }
+    print("touchscreens:")
+    for t in touchDevices() {
+        print("  \(t.label): \(t.mode) touch, profile \(t.profile ?? "-"), display "
+              + (t.display.map { "\(displayName($0)) (\($0))" } ?? "not paired or not connected"))
+    }
+    print("profiles:")
+    for (id, p) in screens.sorted(by: { $0.key < $1.key }) {
+        let connected = touchDevices().contains { $0.profile == id }
+        print("  \(id) \(p["name"] ?? "?"): mode \(p["mode"] ?? "auto"), display \(p["display"] ?? "-"), cal \(p["cal"] ?? "none")"
+              + (connected ? "" : " (not connected)"))
+    }
+    var it: io_iterator_t = 0
+    IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOUSBHostInterface"), &it)
+    while case let x = IOIteratorNext(it), x != 0 {
+        if let f = rawFormat(for: x) { print(String(format: "raw digitizer present: %@ %04x:%04x interface %d (MacTouch reads it while running)", f.name, f.vid, f.pid, f.interface)) }
+        IOObjectRelease(x)
+    }
     let im = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
     print("Input Monitoring: \(im == kIOHIDAccessTypeGranted ? "granted" : im == kIOHIDAccessTypeDenied ? "denied" : "not decided")")
     print("Accessibility: \(AXIsProcessTrusted() ? "granted" : "missing")")
@@ -2111,22 +2748,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func startHID() {
         IOHIDManagerRegisterDeviceMatchingCallback(mgr, { _, _, _, dev in
-            log("attached \(IOHIDDeviceGetProperty(dev, kIOHIDProductKey as CFString) ?? "?" as CFTypeRef)")
+            attached(dev)
             (NSApp.delegate as? AppDelegate)?.updateIcon()
         }, nil)
-        IOHIDManagerRegisterDeviceRemovalCallback(mgr, { _, _, _, _ in
-            endGesture(); slots.removeAll(); lastN = 0
-            log("touch controller removed")
+        IOHIDManagerRegisterDeviceRemovalCallback(mgr, { _, _, _, dev in
+            detached(dev)
             DispatchQueue.main.async { (NSApp.delegate as? AppDelegate)?.updateIcon() }
         }, nil)
         IOHIDManagerRegisterInputValueCallback(mgr, valueCB, nil)
+        watchRawDigitizers()
+        // A touchscreen's display can arrive after the touchscreen, and the notice can be missed.
+        CGDisplayRegisterReconfigurationCallback({ _, flags, _ in
+            if !flags.contains(.beginConfigurationFlag) { DispatchQueue.main.async { refreshDisplays() } }
+        }, nil)
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            let before = devices.values.map { $0.display }
+            refreshDisplays()
+            if devices.values.map({ $0.display }) != before { self?.updateIcon() }
+        }.tolerance = 1
         IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
 
         log("start \(Bundle.main.bundleIdentifier ?? "unbundled") probe=\(probe) settings: \(cfg)")
         // Input Monitoring applies to new processes only, and a running process never sees the grant:
         // exit after a while (non-zero, so launchd restarts us) and let a fresh process try again.
-        guard IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone)) == kIOReturnSuccess else {
-            log("Input Monitoring missing; enable MacTouch in System Settings > Privacy & Security > Input Monitoring")
+        // Opening fails as a whole if one matched device cannot be opened (a keyboard interface, say), so
+        // only a missing permission counts as missing.
+        let opened = IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
+        if opened != kIOReturnSuccess && IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted {
+            log("HID manager open returned \(hex(UInt32(bitPattern: opened))) with Input Monitoring granted; carrying on")
+        }
+        guard opened == kIOReturnSuccess || IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted else {
+            log("Input Monitoring missing (open returned \(hex(UInt32(bitPattern: opened)))); enable MacTouch in System Settings > Privacy & Security > Input Monitoring")
             _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
             Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { _ in exit(75) }
             return
@@ -2138,25 +2790,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             log("Accessibility missing; enable MacTouch in System Settings > Privacy & Security > Accessibility")
             axTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
                 guard AXIsProcessTrusted() else { return }
-                t.invalidate(); log("Accessibility granted"); self?.updateIcon()
+                t.invalidate(); log("Accessibility granted"); startEventTap(); self?.updateIcon()
             }
-        }
-        log("ready; display \(targetDisplay()) rotation \(Int(CGDisplayRotation(targetDisplay())))")
+        } else if !probe { startEventTap() }
+        log("ready; touchscreens: " + (touchDevices().map { "\($0.label) (\($0.mode))" }.joined(separator: ", ")).ifEmpty("none"))
     }
 
-    var status: String {
-        if !hidOpen { return "Waiting for Input Monitoring permission" }
-        if !probe && !AXIsProcessTrusted() { return "Waiting for Accessibility permission" }
-        if touchDevices().isEmpty { return "No touch screen connected" }
-        if cfg.paused { return "Paused" }
-        if probe { return "Probe mode: logging only" }
-        let d = targetDisplay()
-        let name = screen(for: d)?.localizedName ?? "display \(d)"
-        return targetFound ? "Touch active on \(name)" : "Touch display not found; using \(name)"
+    // One line per connected touchscreen.
+    var statusLines: [String] {
+        if !hidOpen { return ["Waiting for Input Monitoring permission"] }
+        if !probe && !AXIsProcessTrusted() { return ["Waiting for Accessibility permission"] }
+        if touchDevices().isEmpty { return ["No touch screen connected"] }
+        if cfg.paused { return ["Paused"] }
+        if probe { return ["Probe mode: logging only"] }
+        return touchDevices().map { t in
+            if let d = t.display { return "Touch active: \(t.name) on \(displayName(d))" }
+            if pairing.device === t { return "\(t.name): touch the orange target to pair it" }
+            return t.mode == "single" ? "\(t.name): not paired with a display (Touchscreens ▸ Pair…)"
+                                      : "\(t.name): display not found; using the main display"
+        }
+    }
+    var status: String { statusLines.joined(separator: "; ") }
+
+    // The screen the top-level screen settings act on: the one touched last, else the only one connected.
+    var menuProfile: String? {
+        if let t = activeDevice, touchDevices().contains(where: { $0 === t }) { return t.profile }
+        return touchDevices().first?.profile ?? (screens.count == 1 ? screens.keys.first : nil)
     }
 
     func updateIcon() {
-        let ok = status.hasPrefix("Touch active")
+        let ok = statusLines.contains { $0.hasPrefix("Touch active") }
         let img = NSImage(systemSymbolName: ok ? "hand.point.up.left" : "hand.raised.slash", accessibilityDescription: "MacTouch")
         img?.isTemplate = true
         item?.button?.image = img
@@ -2173,20 +2836,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         updateIcon()
-        add(menu, status, nil)
+        for line in statusLines { add(menu, line, nil) }
         menu.addItem(.separator())
         add(menu, "Pause Touch", #selector(toggle(_:)), on: cfg.paused, obj: "paused")
         menu.addItem(.separator())
-        add(menu, "One-Finger Scroll", #selector(toggle(_:)), on: cfg.oneFingerScroll, obj: "oneFingerScroll")
-        add(menu, "Two-Finger Tap Right-Clicks", #selector(toggle(_:)), on: cfg.twoFingerTap, obj: "twoFingerTap")
-        add(menu, "Invert Scrolling", #selector(toggle(_:)), on: cfg.invertScroll, obj: "invertScroll")
-        add(menu, "Keep Keyboard Position", #selector(toggle(_:)), on: cfg.keepKeyboard, obj: "keepKeyboard")
-        add(menu, "Auto Keyboard", #selector(toggle(_:)), on: cfg.autoKeyboard, obj: "autoKeyboard")
-        choices(menu, "Pinch", "zoom", cfg.zoom, [("Trackpad Zoom", "gesture"), ("⌘+ / ⌘− Keys", "keys"), ("Off", "off")])
-        choices(menu, "Long Press", "hold", cfg.hold, [0.4, 0.5, 0.6, 0.8, 1.0].map { (String(format: "%.1f s", $0), $0) })
+        // Screen settings act on the screen touched last; with several connected, its name says which.
+        let mp = menuProfile, p = mp.flatMap { screens[$0] } ?? [:]
+        let suffix = touchDevices().count > 1 ? " (\(mp.map(profileName) ?? "?"))" : ""
+        let multi = touchDevices().contains { $0.mode == "multi" && profileMode($0.profile) != "single" } || touchDevices().isEmpty
+        let only = multi ? "" : " (multi-touch screens only)"
+        add(menu, "One-Finger Scroll" + suffix, #selector(toggle(_:)), on: p["oneFingerScroll"] as? Bool ?? cfg.oneFingerScroll,
+            obj: ["oneFingerScroll", mp as Any])
+        add(menu, "Two-Finger Tap Right-Clicks" + only, #selector(toggle(_:)), on: cfg.twoFingerTap, obj: ["twoFingerTap"], enabled: multi)
+        add(menu, "Invert Scrolling", #selector(toggle(_:)), on: cfg.invertScroll, obj: ["invertScroll"])
+        add(menu, "Keep Keyboard Position", #selector(toggle(_:)), on: cfg.keepKeyboard, obj: ["keepKeyboard"])
+        add(menu, "Auto Keyboard", #selector(toggle(_:)), on: cfg.autoKeyboard, obj: ["autoKeyboard"])
+        choices(menu, "Pinch" + only, "zoom", cfg.zoom, [("Trackpad Zoom", "gesture"), ("⌘+ / ⌘− Keys", "keys"), ("Off", "off")]).isEnabled = multi
+        choices(menu, "Long Press" + suffix, "hold", p["hold"] as? Double ?? cfg.hold,
+                [0.4, 0.5, 0.6, 0.8, 1.0].map { (String(format: "%.1f s", $0), $0) }, profile: mp)
         ringColors(menu)
         choices(menu, "Scroll Speed", "scrollScale", cfg.scrollScale, [0.5, 0.75, 1.0, 1.5, 2.0].map { ("\($0)×", $0) })
-        choices(menu, "Multi-Finger Swipes", "swipes", cfg.swipes, [("Three or Four Fingers", "3"), ("Four Fingers Only", "4"), ("Off", "off")])
+        choices(menu, "Multi-Finger Swipes" + only, "swipes", cfg.swipes,
+                [("Three or Four Fingers", "3"), ("Four Fingers Only", "4"), ("Off", "off")]).isEnabled = multi
         add(menu, "Resize Windows at Edges", #selector(toggleEdge(_:)), on: cfg.edge > 0)
         menu.addItem(.separator())
         appList(menu, "Drag Apps", "dragApps", cfg.dragApps, "In these apps one finger always drags.")
@@ -2197,9 +2868,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(menu, sketch.active && !sketch.overlay ? "Close Whiteboard" : "Whiteboard…", #selector(toggleBoard(_:)), enabled: canTouch)
         add(menu, sketch.active && sketch.overlay ? "Stop Drawing on Screen" : "Draw on Screen…", #selector(toggleOverlay(_:)), enabled: canTouch)
         menu.addItem(.separator())
-        add(menu, "Calibrate Touch…", #selector(calibrate(_:)), enabled: hidOpen && !touchDevices().isEmpty)
-        add(menu, "Undo Calibration", #selector(undoCalibration(_:)), enabled: previousCal.map { $0 != cfg.cal } ?? false)
-        add(menu, "Reset Calibration", #selector(resetCalibration(_:)), enabled: cfg.cal != identityCal)
+        calibrationItems(menu, mp, suffix)
+        touchscreens(menu)
         menu.addItem(.separator())
         add(menu, "Open Log", #selector(openLog(_:)))
         add(menu, "MacTouch on GitHub", #selector(openRepo(_:)))
@@ -2218,10 +2888,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return i
     }
 
-    func choices<T: Equatable>(_ menu: NSMenu, _ title: String, _ key: String, _ current: T, _ opts: [(String, T)]) {
+    @discardableResult
+    func choices<T: Equatable>(_ menu: NSMenu, _ title: String, _ key: String, _ current: T, _ opts: [(String, T)],
+                               profile: String? = nil) -> NSMenuItem {
         let sub = NSMenu(); sub.autoenablesItems = false
-        for (label, v) in opts { add(sub, label, #selector(choose(_:)), on: v == current, obj: [key, v] as [Any]) }
-        menu.addItem(withTitle: title, action: nil, keyEquivalent: "").submenu = sub
+        for (label, v) in opts { add(sub, label, #selector(choose(_:)), on: v == current, obj: [key, v, profile as Any] as [Any]) }
+        let i = menu.addItem(withTitle: title, action: nil, keyEquivalent: "")
+        i.submenu = sub
+        return i
+    }
+
+    func calibrationItems(_ menu: NSMenu, _ id: String?, _ suffix: String) {
+        let connected = touchDevices().contains { $0.profile == id && $0.driven && $0.display != nil || $0.profile == id && $0.mode == "multi" }
+        let cal = calibration(id)
+        add(menu, "Calibrate Touch…" + suffix, #selector(calibrate(_:)), obj: id as Any, enabled: hidOpen && connected)
+        add(menu, "Undo Calibration", #selector(undoCalibration(_:)), obj: id as Any, enabled: previousCal(id).map { $0 != cal } ?? false)
+        add(menu, "Reset Calibration", #selector(resetCalibration(_:)), obj: id as Any, enabled: cal != identityCal)
+    }
+
+    // One submenu per touchscreen MacTouch knows, connected or not.
+    func touchscreens(_ menu: NSMenu) {
+        let sub = NSMenu(); sub.autoenablesItems = false
+        for (id, p) in screens.sorted(by: { profileName($0.key) < profileName($1.key) }) {
+            let dev = touchDevices().first { $0.profile == id } ?? devices.values.first { $0.profile == id }
+            let mode = p["mode"] as? String ?? "auto", kind = dev?.kind ?? (mode == "auto" ? "" : mode)
+            let spec = p["display"] as? String ?? ""
+            let where_ = dev?.display.map(displayName) ?? (spec.isEmpty ? "no display paired" : "display not connected")
+            let s = NSMenu(); s.autoenablesItems = false
+            add(s, (dev == nil ? "Not connected" : mode == "ignore" ? "Not used (not a touchscreen)"
+                    : (kind == "single" ? "Single touch" : "Multi-touch")) + " · " + where_, nil)
+            s.addItem(.separator())
+            add(s, "Pair with Display…", #selector(pairScreen(_:)), obj: id, enabled: dev != nil && mode != "ignore" && hidOpen)
+            calibrationItems(s, id, "")
+            add(s, "One-Finger Scroll", #selector(toggle(_:)), on: p["oneFingerScroll"] as? Bool ?? false, obj: ["oneFingerScroll", id])
+            var modes: [(String, String)] = [("Automatic" + (dev.map { " (\($0.kind == "single" ? "single touch" : "multi-touch"))" } ?? ""), "auto")]
+            if dev?.kind != "single" { modes += [("Multi-Touch", "multi")] }
+            modes += [("Single Touch", "single"), ("Not a Touchscreen", "ignore")]
+            choices(s, "Mode", "mode", mode, modes, profile: id)
+            s.addItem(.separator())
+            add(s, "Forget This Touchscreen", #selector(forgetScreen(_:)), obj: id)
+            let title = (p["name"] as? String ?? id) + (dev == nil ? " (not connected)" : "")
+            sub.addItem(withTitle: title, action: nil, keyEquivalent: "").submenu = s
+        }
+        if screens.isEmpty { add(sub, "(none yet: connect a touchscreen)", nil) }
+        menu.addItem(withTitle: "Touchscreens", action: nil, keyEquivalent: "").submenu = sub
     }
 
     func ringColors(_ menu: NSMenu) {
@@ -2255,10 +2965,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: title, action: nil, keyEquivalent: "").submenu = sub
     }
 
-    func value(_ key: String) -> Bool {
+    func value(_ key: String, _ profile: String?) -> Bool {
+        if profileKeys.contains(key), let id = profile, let v = screens[id]?[key] as? Bool { return v }
         switch key {
         case "paused": return cfg.paused
-        case "oneFingerScroll": return cfg.oneFingerScroll
+        case "oneFingerScroll": return profile == nil ? cfg.oneFingerScroll : false
         case "twoFingerTap": return cfg.twoFingerTap
         case "invertScroll": return cfg.invertScroll
         case "keepKeyboard": return cfg.keepKeyboard
@@ -2267,17 +2978,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    // representedObject: the key, or [key] / [key, profile]
     @objc func toggle(_ s: NSMenuItem) {
-        guard let key = s.representedObject as? String else { return }
+        let kv = s.representedObject as? [Any] ?? [s.representedObject as Any]
+        guard let key = kv.first as? String else { return }
+        let id = kv.count > 1 ? kv[1] as? String : nil
         if key == "paused" { endGesture() }
-        setSetting(key, !value(key))
+        setSetting(key, !value(key, id), profile: id)
         updateIcon()
     }
     @objc func toggleEdge(_ s: NSMenuItem) { setSetting("edge", cfg.edge > 0 ? 0.0 : 12.0) }
     @objc func choose(_ s: NSMenuItem) {
         guard let kv = s.representedObject as? [Any], let key = kv[0] as? String else { return }
-        setSetting(key, kv[1])
+        let id = kv.count > 2 ? kv[2] as? String : nil
+        if key == "mode", let id {   // a screen's mode lives only in its profile
+            setProfile(id, "mode", kv[1]); log("set mode = \(kv[1]) for \(profileName(id))")
+            if activeDevice?.profile == id { endGesture() }
+            refreshDisplays(); updateIcon(); return
+        }
+        setSetting(key, kv[1], profile: id)
         if key.hasPrefix("piano") { piano.settingsChanged() }
+    }
+    @objc func pairScreen(_ s: NSMenuItem) {
+        guard let id = s.representedObject as? String, let t = devices.values.first(where: { $0.profile == id }) else { return }
+        pairing.request(t)
+    }
+    @objc func forgetScreen(_ s: NSMenuItem) {
+        guard let id = s.representedObject as? String else { return }
+        var all = screens; all[id] = nil; screens = all
+        log("forgot touchscreen profile \(id)")
+        for t in uniqueDevices() where t.profile == id {   // a connected one starts over as new
+            if activeDevice === t { endGesture(); activeDevice = nil; activeProfile = nil; cfg = loadConfig() }
+            if t.raw != nil { t.profile = nil; register(t); continue }
+            for d in t.services { devices[ObjectIdentifier(d)] = nil }
+            for d in t.services { attached(d) }
+        }
+        updateIcon()
     }
     @objc func togglePiano(_ s: NSMenuItem) {
         if piano.active { piano.close() } else { if sketch.active { sketch.close() }; piano.open() }
@@ -2301,9 +3037,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let list = kv[0] == "dragApps" ? cfg.dragApps : cfg.zoomKeyApps
         setSetting(kv[0], list.filter { $0 != kv[1] })
     }
-    @objc func calibrate(_ s: NSMenuItem) { calibrator.start() }
-    @objc func resetCalibration(_ s: NSMenuItem) { setCalibration(identityCal) }
-    @objc func undoCalibration(_ s: NSMenuItem) { if let p = previousCal { setCalibration(p) } }   // a second undo redoes
+    @objc func calibrate(_ s: NSMenuItem) {   // on the screen whose profile the item belongs to
+        if let id = s.representedObject as? String, let t = touchDevices().first(where: { $0.profile == id }) { activate(t) }
+        calibrator.start()
+    }
+    @objc func resetCalibration(_ s: NSMenuItem) { setCalibration(identityCal, profile: s.representedObject as? String) }
+    @objc func undoCalibration(_ s: NSMenuItem) {   // a second undo redoes
+        let id = s.representedObject as? String
+        if let p = previousCal(id) { setCalibration(p, profile: id) }
+    }
     @objc func openLog(_ s: NSMenuItem) {
         let url = URL(fileURLWithPath: logPath)
         NSWorkspace.shared.open(FileManager.default.fileExists(atPath: logPath) ? url : url.deletingLastPathComponent())

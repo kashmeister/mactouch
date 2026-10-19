@@ -1,32 +1,56 @@
 # MacTouch
 
-A macOS menu bar app that makes a USB multi-touch screen usable as a touchscreen: tap, drag, right
-click, one- and two-finger scroll, and pinch to zoom, with a built-in calibration wizard.
+A macOS menu bar app that makes USB touch screens usable as touchscreens: tap, drag, right click,
+one- and two-finger scroll, pinch to zoom and multi-finger swipes, with a built-in calibration
+wizard. It detects what kind of touch screen is connected, pairs each one with its display once, and
+remembers its settings.
 
 ## Hardware
 
-Any touch screen whose controller is a standard HID multi-touch digitizer, the kind Windows drives
-without a driver. The defaults are set for a Wisecoco 3840 × 1100 bar display, whose touch layer is
-an ILITEK controller, USB `222a:0001`, reporting up to 10 contacts.
+MacTouch handles three kinds of touch controller and tells them apart when they connect:
 
-To check a monitor, run `MacTouch --check` (see [Usage](#usage)) and look for display vendor
-`0x2613`, model `0x2023`, and a touch device named `ILITEK-TP`, or run `hidutil list` and look for
-USB IDs `0x222a 0x1` with usage page 13 (digitizer). For other screens, see
-[Configuration](#configuration).
+| Kind | What macOS does with it | Example | Gestures |
+|---|---|---|---|
+| HID multi-touch digitizer, the kind Windows drives without a driver | Claims it with its generic HID driver, but nothing happens on touch | Wisecoco 3840 × 1100 bar display: ILITEK controller, USB `222a:0001`, 10 contacts | All |
+| Single-touch screen that presents an absolute-position mouse | Drives it, but puts each touch on whichever display the cursor is on | CX158 portable monitor in mouse mode, USB `0416:c169` | One finger: tap, drag, hold, one-finger scroll |
+| Multi-touch interface macOS attaches no driver to | Nothing: the controller refuses the request for its HID descriptor | CX158 in digitizer mode, USB `eeef:2828`, 10 contacts | All |
+
+The CX158 is the model name the panel reports; it is sold under several brands, for example the
+UPERFECT 14" OLED 3K portable monitor. Its controller comes up in either mode.
+
+To check a monitor, run `MacTouch --check` (see [Usage](#usage)): it lists the displays, the touch
+screens it found and what it does with each. `hidutil list` shows USB IDs and usage pages (13 is a
+digitizer). For screens not listed here, see [Configuration](#configuration).
 
 ## Why
 
-These controllers enumerate as HID multi-touch digitizers. macOS claims them with its generic HID
-driver but has no touchscreen support, so touches go nowhere: the pointer does not move and nothing
-clicks. Other drivers fix this too (see [Alternatives](#alternatives)); this one is about 900 lines
-of Swift, with per-app behaviour, two-finger scrolling and calibration.
+macOS has no touchscreen support. A HID multi-touch digitizer is claimed by the generic HID driver,
+but touches go nowhere: the pointer does not move and nothing clicks. Screens that emulate a mouse do
+move the pointer, but on the wrong display whenever there is more than one. Other drivers fix the
+first case (see [Alternatives](#alternatives)); this one handles all three in about 3,000 lines of
+Swift, with per-app behaviour, two-finger scrolling, calibration and per-screen settings.
 
 ## How it works
 
-MacTouch opens the controller with IOHIDManager, without seizing it, and reads the finger slots of
-each report: tip switch, X and Y. It maps them onto the touch display, turning them with the
-display's rotation and applying the calibration, and posts mouse, scroll and gesture events with
-CGEvent:
+MacTouch reads each touch screen's contacts, maps them onto that screen's display, turning them with
+the display's rotation and applying the screen's calibration, and posts mouse, scroll and gesture
+events with CGEvent:
+
+- **Digitizers** are opened with IOHIDManager, without seizing them; MacTouch reads the finger slots
+  of each report: tip switch, X and Y. If a digitizer has an Input Mode feature, MacTouch sets it to
+  multi-touch, as Windows does.
+- **Single-touch screens** are read the same way. macOS keeps turning their reports into pointer
+  events on the display the cursor is on, and taking the device away from macOS is not possible, so
+  an event tap drops those events: hardware pointer events while that screen is touched, or within
+  80 ms of its last report. MacTouch's own events pass. If MacTouch stops, the screen goes back to
+  macOS's handling.
+- **Interfaces without a driver** are opened directly with IOUSBHost, which needs no driver or
+  entitlement for an interface nobody has claimed, and their reports are decoded with a known layout.
+  For the CX158: report ID 1, ten 5-byte contact slots (finger-down bit, contact ID, X 0–32767,
+  Y 0–20479) and the contact count.
+
+Only one screen drives the gestures at a time: the one whose touch starts while nothing else is
+touched.
 
 | Gesture | Default | With one-finger scroll |
 |---|---|---|
@@ -80,7 +104,26 @@ Some displays drop off the bus while they sleep. macOS then moves windows to a s
 the Accessibility Keyboard comes back centred. MacTouch remembers where the keyboard's panels sit
 while the display is settled and moves them back a few seconds after it returns.
 
-Reading the controller needs Input Monitoring; posting events needs Accessibility.
+Reading HID controllers needs Input Monitoring; posting events, and filtering a single-touch screen's
+own events, needs Accessibility.
+
+### Touchscreens and profiles
+
+Each touch screen MacTouch meets gets a profile, keyed by its USB IDs (and serial number), holding
+what belongs to that screen: its display, calibration, axis fixes, One-Finger Scroll, Long Press and
+mode. Everything else is global. A screen that reconnects goes straight back to its profile; nothing
+needs setting up again.
+
+A new touch screen is paired with its display once. MacTouch shows an orange target on each
+external display that has no touch screen yet, at a different spot on each; the first touch picks
+the display whose target it lands nearest. A digitizer with only one such display is paired without
+asking. Esc puts it off (**Touchscreens ▸ name ▸ Pair with Display…** asks again), and
+**Not a Touchscreen** tells MacTouch to leave a device alone, for example a KVM's virtual mouse.
+Single-touch screens are left to macOS until they are paired. New single-touch screens start with
+One-Finger Scroll on, as one finger is all they have to scroll with.
+
+A controller that shows up under different USB IDs in different modes, such as the CX158, gets one
+profile per mode; the second one takes the first one's display.
 
 ## Alternatives
 
@@ -98,15 +141,16 @@ Other ways to get a touchscreen working on macOS:
 - [UPDD](https://touch-base.com/download-macos) by Touch-Base: the commercial driver many monitor
   makers ship.
 
-Some touch monitors are a different case: macOS already drives them as an absolute-position mouse,
-but sends each touch to whichever display the cursor is on. MacTouch does not handle those; for the
-CX158 portable monitor, [cx158-touch-warp](https://github.com/kashmeister/cx158-touch-warp) redirects
-touches to the right display.
+MacTouch also replaces [cx158-touch-warp](https://github.com/kashmeister/cx158-touch-warp), which only
+moved CX158 touches onto the right display; `install.sh` stops and removes it.
 
 | | MacTouch | Touch Up | macTouchScreen | MacXeneonEdgeTouchDriver | UPDD |
 |---|:-:|:-:|:-:|:-:|:-:|
 | Free and open source (MIT) | ✅ | ✅ | ✅ | ✅ | ❌ paid license |
 | Any HID multi-touch screen | ✅ | ✅ | ✅ | ❌ Xeneon Edge only | ✅ |
+| Single-touch (absolute mouse) screens | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Multi-touch interfaces macOS has no driver for | ✅ known layouts (CX158) | ❌ | ❌ | ❌ | ❓ |
+| Several touch screens, settings per screen | ✅ profiles, paired by touch | ❌ | ❌ | ❌ | ✅ |
 | Multi-touch | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Tap, double-tap, drag | ✅ | ✅ | ✅ | ✅ | ✅ |
 | One-finger scroll, hold to drag | ✅ | ✅ | ❌ one finger drags | ✅ | ✅ |
@@ -115,14 +159,14 @@ touches to the right display.
 | Pinch to zoom | ✅ trackpad zoom or ⌘+/⌘− | ✅ | ➖ ⌘+/⌘− only, off by default | ❌ | ✅ |
 | Three- and four-finger swipes | ✅ Spaces, Mission Control | ❌ | ✅ Spaces, Mission Control | ❌ | ❓ |
 | Follows display rotation | ✅ automatic | ✅ | ➖ manual swap/flip | ❌ landscape only | ✅ |
-| Targets one display among several | ✅ by vendor and model | ✅ | ✅ by USB-C port or by touch | ✅ | ✅ |
+| Targets one display among several | ✅ paired by touch, by vendor and model | ✅ | ✅ by USB-C port or by touch | ✅ | ✅ |
 | Calibration | ✅ built-in wizard | ❌ | ❌ | ❌ | ✅ |
 | Per-app behaviour | ✅ drag apps, zoom-key apps | ❌ | ❌ | ❌ | ❓ |
 | Title bars drag at once with one-finger scroll on | ✅ | ❌ | ➖ no one-finger scroll | ❌ | ❓ |
 | Settings UI | ✅ menu bar | ✅ window | ✅ menu bar and window | ❌ JSON file | ✅ |
 | Prebuilt download | ❌ build from source | ✅ notarized | ➖ not notarized | ❌ build from source | ✅ |
 | Permissions survive updates | ✅ | ✅ signed app | ❌ re-add after updates | ❓ | ✅ signed app |
-| Source size | ~900 lines of Swift | ~4,200 lines | ~2,500 lines with tests | ~28,000 lines with tests | closed |
+| Source size | ~3,000 lines of Swift | ~4,200 lines | ~2,500 lines with tests | ~28,000 lines with tests | closed |
 
 ✅ supported · ➖ partly · ❌ not supported · ❓ not verified. Compiled from each project's source and README in
 October 2026; UPDD from Touch-Base's documentation, not tested here. Corrections welcome.
@@ -131,7 +175,7 @@ October 2026; UPDD from Touch-Base's documentation, not tested here. Corrections
 
 - macOS 26 (tested); earlier versions from 13 may work but are untested
 - Xcode Command Line Tools
-- A touch screen whose controller is a HID multi-touch digitizer
+- A touch screen of one of the kinds under [Hardware](#hardware)
 
 ## Install
 
@@ -142,8 +186,9 @@ cd mactouch
 ```
 
 This builds `MacTouch.app`, copies it to `~/Applications` and starts it at login. Options given to
-`install.sh` are saved as settings; see [Configuration](#configuration). Everything except the USB
-IDs can also be changed later from the menu bar.
+`install.sh` are saved as settings; see [Configuration](#configuration). Everything can also be
+changed later from the menu bar, and new touch screens are paired by touch (see
+[Touchscreens and profiles](#touchscreens-and-profiles)).
 
 Then enable **MacTouch** in System Settings → Privacy & Security under both **Input Monitoring** and
 **Accessibility**. If it is not listed, add `~/Applications/MacTouch.app` with **+**. MacTouch
@@ -151,8 +196,8 @@ restarts itself every 20 s until Input Monitoring is granted, and picks up Acces
 The grants are tied to the signing identifier `local.mactouch`, so they survive rebuilds.
 
 MacTouch is ready when its menu bar icon shows a pointing hand and the menu says
-**Touch active on …**. A crossed-out hand means a permission or the touch screen is missing; the
-first line of the menu says which.
+**Touch active: … on …**, one line per touch screen. A crossed-out hand means a permission or the
+touch screen is missing; the first lines of the menu say which.
 
 ## Usage
 
@@ -160,24 +205,26 @@ first line of the menu says which.
 
 | Item | Effect |
 |---|---|
-| Status line | Touch active, paused, or what is missing |
-| Pause Touch | Ignore the touch screen until unpaused |
-| One-Finger Scroll | iPad-style scrolling, see [How it works](#how-it-works) |
-| Two-Finger Tap Right-Clicks | Two-finger tap as a right click |
+| Status lines | One per touch screen: active and on which display, waiting to be paired, or what is missing |
+| Pause Touch | Ignore the touch screens until unpaused |
+| One-Finger Scroll | iPad-style scrolling, see [How it works](#how-it-works). Per screen: with several connected, the item names the screen touched last |
+| Two-Finger Tap Right-Clicks | Two-finger tap as a right click (multi-touch screens only) |
 | Invert Scrolling | Reverse both scroll gestures |
 | Auto Keyboard | Expand the minimized Accessibility Keyboard when a tap puts the focus in a text field, and minimize it again after you leave |
 | Keep Keyboard Position | Put the Accessibility Keyboard back where it was after display sleep, wake and unlock |
-| Pinch | Trackpad zoom, ⌘+ / ⌘− keys, or off |
-| Long Press, Scroll Speed | Hold time and scroll speed |
+| Pinch | Trackpad zoom, ⌘+ / ⌘− keys, or off (multi-touch screens only) |
+| Long Press | Hold time, per screen |
+| Scroll Speed | Scroll speed |
 | Hold Ring Color | Colour of the hold cue ring |
-| Multi-Finger Swipes | Three or four fingers, four only, or off |
+| Multi-Finger Swipes | Three or four fingers, four only, or off (multi-touch screens only) |
 | Resize Windows at Edges | Drags that start at a window edge resize it |
 | Drag Apps, Zoom-Key Apps | Lists of apps with special handling. **Add …** adds the app that was in front when the menu opened; click an app to remove it |
 | Music… | Open music mode: piano, drums, strum, theremin and loops; settings are in its bar |
 | Whiteboard…, Draw on Screen… | Draw with your fingers on a board or over the screen |
-| Calibrate Touch… | Run the calibration wizard |
+| Calibrate Touch… | Run the calibration wizard on the screen touched last |
 | Undo Calibration | Switch back to the calibration before the last change; choose it again to redo |
 | Reset Calibration | Go back to an uncalibrated mapping; Undo restores the calibration |
+| Touchscreens | One submenu per known screen, connected or not: its kind and display; Pair with Display…; Calibrate…, Undo and Reset Calibration; One-Finger Scroll; Mode (Automatic, Multi-Touch, Single Touch, Not a Touchscreen); Forget This Touchscreen |
 | Open Log | Open `~/Library/Logs/MacTouch.log` |
 | Quit MacTouch | Quit until the next login |
 
@@ -233,9 +280,10 @@ and Done.
 ### Calibration
 
 Fingers land slightly below the point they aim at, and the touch layer may not line up exactly with
-the picture. **Calibrate Touch…** shows a red cross at 9 positions, twice each. Tap the centre of
-each one; Esc cancels. MacTouch fits a straight line per axis from where the taps landed, saves it,
-and shows the average error before and after.
+the picture. **Calibrate Touch…** shows a red cross at 9 positions, twice each, on the screen touched
+last (or **Touchscreens ▸ name ▸ Calibrate…** for a given one). Tap the centre of each one; Esc
+cancels. MacTouch fits a straight line per axis from where the taps landed, saves it in that screen's
+profile, and shows the average error before and after.
 
 On the reference display, calibration moved the mean error from about 17 pt, mostly downward, to
 about 10 pt with no bias. What is left is finger and controller scatter, about ±1 mm. A full affine
@@ -247,7 +295,7 @@ The app's executable is `~/Applications/MacTouch.app/Contents/MacOS/MacTouch`.
 
 | Command | Effect |
 |---|---|
-| `MacTouch --check` | Print displays, touch device, permissions and settings, then exit |
+| `MacTouch --check` | Print displays, touch screens and what MacTouch does with each, profiles, permissions and settings, then exit |
 | `MacTouch --save [options]` | Store settings and exit; restart MacTouch to apply them |
 | `MacTouch --reset` | Forget all settings and exit |
 | `MacTouch --probe [--raw]` | Log contacts (or every HID value) without posting events |
@@ -257,9 +305,17 @@ The app's executable is `~/Applications/MacTouch.app/Contents/MacOS/MacTouch`.
 
 ## Troubleshooting
 
-**Touch does nothing.** Open the menu and read the status line. If no touch screen is connected,
+**Touch does nothing.** Open the menu and read the status lines. If no touch screen is connected,
 check the USB cable: touch needs a data connection, not just video. If a permission is missing,
-enable it.
+enable it. A single-touch screen that is not paired yet stays with macOS; pair it from
+**Touchscreens**.
+
+**Touch keeps dropping out (CX158).** Check the kernel log for USB errors:
+`log show --last 5m --predicate 'process == "kernel" AND eventMessage CONTAINS "transaction error"'`.
+Many errors mean a bad USB 2.0 link: the monitor's built-in hub keeps being reset and takes the
+touch controller with it. On the reference setup, moving the cable to the Mac's other USB-C port
+stopped the errors; a different cable or powering the monitor separately can help too. The CX158's
+controller then comes up in digitizer mode, which MacTouch reads directly.
 
 **Touches land mirrored or rotated.** MacTouch follows the display rotation set in System Settings →
 Displays. 0° and 180° are tested; for 90° or 270°, or a panel mounted differently, use `--swap`,
@@ -267,8 +323,8 @@ Displays. 0° and 180° are tested; for 90° or 270°, or a panel mounted differ
 
 **Touches are offset.** Run **Calibrate Touch…**.
 
-**Touches go to the wrong display.** MacTouch targets the display set by `--display`, falling back to
-the main display; the status line names the display in use. Find vendor and model with `--check`.
+**Touches go to the wrong display.** Choose **Touchscreens ▸ name ▸ Pair with Display…** and touch
+the screen. The status line names the display each screen uses; `--check` lists vendor and model.
 
 **A swipe left or right does nothing.** Enable "Move left a space" and "Move right a space" in
 System Settings → Keyboard → Keyboard Shortcuts → Mission Control, and make sure there are at least
@@ -303,8 +359,8 @@ switches take `=false` to turn them off.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--vid=`, `--pid=` | `0x222a`, any | USB IDs of the touch controller |
-| `--display=VENDOR:MODEL` | `0x2613:0x2023` | CoreGraphics vendor and model of the touch display, or `main` |
+| `--vid=`, `--pid=` | `0x222a`, any | USB IDs of the touch controller whose profile `--save` changes |
+| `--display=VENDOR:MODEL` | paired by touch | CoreGraphics vendor and model (optionally `:serial`) of its display, or `main` |
 | `--flip-x`, `--flip-y`, `--swap` | off | Axis fixes applied after the display rotation |
 | `--cal=ax,bx,ay,by` | none | Calibration as `touched = a × target + b`, in fractions of the display; set by the wizard |
 | `--one-finger-scroll` | off | iPad-style one-finger scrolling |
@@ -327,8 +383,14 @@ switches take `=false` to turn them off.
 
 App names are window owner names, usually the name shown in Activity Monitor.
 
+`--vid`, `--pid`, `--display`, the axis fixes, `--cal`, `--one-finger-scroll` and `--hold` are
+screen settings: `--save` stores them in the profile for `--vid`/`--pid` (made if missing), or in the
+only profile when no `--vid` is given. Settings from 3.0 and older become the first screen's profile.
+
 Other touch screens work if their controller is a HID digitizer with Finger collections (usage page
-`0x0D`, usage `0x22`) holding tip switch and X/Y. Set `--vid`, `--pid` and `--display` for them.
+`0x0D`, usage `0x22`) holding tip switch and X/Y, or an absolute-position mouse (X/Y not relative,
+plus a button). Interfaces without a driver need their report layout added to `rawFormats` in
+`MacTouch.swift`.
 
 ## Uninstall
 
