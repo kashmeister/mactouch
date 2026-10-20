@@ -36,6 +36,22 @@ func runSelfTest() -> Never {
         }
     }
 
+    // Edge values: an edge reading maps to its target, the edge zones join the line, every axis keeps
+    // rising, and edge values that would fold an axis back are dropped.
+    let (a, b) = (0.87, 0.006), line = { (t: Double) in a * t + b }
+    let edged = [a, b, a, b, line(calEdge) + 0.012, line(1 - calEdge) - 0.01, line(calEdge) + 0.008, line(1 - calEdge) - 0.015]
+    for (axis, lo, hi) in [(\CGPoint.x, edged[4], edged[5]), (\CGPoint.y, edged[6], edged[7])] {
+        func mapped(_ u: Double) -> Double { Double(applyCal(CGPoint(x: u, y: u), edged)[keyPath: axis]) }
+        expect(abs(mapped(lo) - calEdge) < 1e-9 && abs(mapped(hi) - (1 - calEdge)) < 1e-9, "edge readings map to their targets")
+        for t in [calInner, 1 - calInner, 0.5] { expect(abs(mapped(line(t)) - t) < 1e-9, "edge zone joins the line at \(t)") }
+        let sweep = stride(from: 0.0, through: 1.0, by: 0.001).map(mapped)
+        expect(zip(sweep, sweep.dropFirst()).allSatisfy { $0 <= $1 }, "calibrated axis keeps rising")
+        expect(sweep.first == 0 && sweep.last == 1, "both edges reachable")
+    }
+    expect(validCal(edged)?.count == 8, "plausible edge values kept")
+    expect(validCal(Array(edged.prefix(4)) + [line(0.2), edged[5], edged[6], edged[7]])?.count == 4, "folding edge value dropped")
+    expect(validCal([a, b, a]) == nil, "three numbers are no calibration")
+
     // Report layouts against their recorded samples.
     for k in knownControllers {
         guard let raw = k.raw else { continue }

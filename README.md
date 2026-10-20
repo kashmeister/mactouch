@@ -97,6 +97,10 @@ the window under the finger at touch-down:
 - in drag apps one finger always drags. The default is `AssistiveControl`, the macOS Accessibility
   Keyboard. Add apps whose sliders move the wrong way under scrolling, such as `eqMac`.
 
+On the desktop and in title bars, a hold right-clicks too: the ring shows there whether or
+not one-finger scroll is on, so moving while it shows drags as usual. In drag apps and at window
+edges a press only ever drags.
+
 Posted events do not count as user activity, so MacTouch also declares activity on every
 touch-down. That keeps the display awake while you use it and wakes it from display sleep. A touch
 on a sleeping display only wakes it; it does not click.
@@ -291,11 +295,14 @@ and Done.
 ### Calibration
 
 Fingers land slightly below the point they aim at, and the touch layer may not line up exactly with
-the picture. **Calibrate Touch…** shows a red cross at 9 positions, twice each, on the screen touched
-last (or **Touchscreens ▸ name ▸ Calibrate Touch…** for a given one). Tap the centre of each one; Esc
-cancels. MacTouch fits a straight line per axis from where the taps landed, saves it in that screen's
-profile, and shows the average error before and after. The calibration is kept in the touch panel's
-own axes, so it stays right when the display is rotated.
+the picture. **Calibrate Touch…** shows a red cross at 18 positions on the screen touched last (or
+**Touchscreens ▸ name ▸ Calibrate Touch…** for a given one): 9 inset from the edges, then 9 at the
+edges and corners. Tap the centre of each one; Esc cancels. MacTouch fits a straight line per axis
+from the inset taps. Touch panels read inward near their edges, often by 10 pt or more, so it also
+measures that from the edge taps and corrects touches within 10% of each edge, which keeps menu bar
+items and window buttons in the corners within reach. It saves the result in that screen's profile
+and shows the average error before and after. The calibration is kept in the touch panel's own axes,
+so it stays right when the display is rotated.
 
 On the reference display, calibration moved the mean error from about 17 pt, mostly downward, to
 about 10 pt with no bias. What is left is finger and controller scatter, about ±1 mm. A full affine
@@ -385,7 +392,7 @@ switches take `=false` to turn them off.
 | `--vid=`, `--pid=` | `0x222a`, any | USB IDs of the touch controller whose profile `--save` changes |
 | `--display=VENDOR:MODEL` | paired by touch | CoreGraphics vendor and model (optionally `:serial`) of its display, or `main` |
 | `--flip-x`, `--flip-y`, `--swap` | off | Axis fixes applied after the display rotation |
-| `--cal=ax,bx,ay,by` | none | Calibration as `touched = a × target + b`, in fractions of the touch panel's own axes (before rotation), so it holds in every rotation; set by the wizard |
+| `--cal=ax,bx,ay,by[,x0,x1,y0,y1]` | none | Calibration as `touched = a × target + b`, in fractions of the touch panel's own axes (before rotation), so it holds in every rotation, optionally with the touched values 2% from each edge; set by the wizard |
 | `--one-finger-scroll` | off | iPad-style one-finger scrolling |
 | `--two-finger-tap` | off | Two-finger tap right clicks |
 | `--hold=` | `0.6` | Long-press time in seconds |

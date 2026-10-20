@@ -31,7 +31,7 @@ let options = [
     Option(flag: "--flip-x", key: "flipX", kind: .bool, help: "mirror X, after the display's rotation"),
     Option(flag: "--flip-y", key: "flipY", kind: .bool, help: "mirror Y"),
     Option(flag: "--swap", key: "swap", kind: .bool, help: "swap X and Y"),
-    Option(flag: "--cal", key: "cal", kind: .cal, help: "ax,bx,ay,by: calibration, touched = a*target + b in panel fractions (set by the wizard)"),
+    Option(flag: "--cal", key: "cal", kind: .cal, help: "ax,bx,ay,by[,x0,x1,y0,y1]: calibration, touched = a*target + b in panel fractions, and touched values near the edges (set by the wizard)"),
     Option(flag: "--one-finger-scroll", key: "oneFingerScroll", kind: .bool, help: "one finger scrolls; hold, then move, drags"),
     Option(flag: "--hold", key: "hold", kind: .double, help: "long-press time in seconds (0.6)"),
     Option(flag: "--two-finger-tap", key: "twoFingerTap", kind: .bool, help: "a two-finger tap right-clicks"),
@@ -82,8 +82,7 @@ func parse(_ s: String, _ kind: OptionKind) -> Any? {
     case .swipes: return ["3", "4", "off"].contains(s) ? s : nil
     case .list: return s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     case .cal:
-        let v = s.split(separator: ",").compactMap { Double($0) }
-        return v.count == 4 && v[0] != 0 && v[2] != 0 ? v : nil
+        return validCal(s.split(separator: ",").compactMap { Double($0) })
     }
 }
 
@@ -180,7 +179,7 @@ func loadConfig() -> Config {
     rd("thereminSnap", \.thereminSnap); rd("metronomeBPM", \.metronomeBPM); rd("autoKeyboard", \.autoKeyboard)
     rd("inkPredict", \.inkPredict); c.inkPredict = min(max(c.inkPredict, 0), 50)
     c.pianoOctaves = min(max(c.pianoOctaves, 1), 6); c.pianoSound = min(max(c.pianoSound, 0), 127)
-    if c.cal.count != 4 || c.cal[0] == 0 || c.cal[2] == 0 { c.cal = identityCal }
+    c.cal = validCal(c.cal) ?? identityCal
     return c
 }
 
@@ -201,9 +200,15 @@ func setSetting(_ key: String, _ value: Any, profile: String? = nil) {
 }
 
 // Every calibration change keeps the one it replaces, so Undo Calibration can switch back.
+/// A usable calibration (see applyCal), or nil. Edge values that would not keep an axis rising are
+/// dropped.
 func validCal(_ v: Any?) -> [Double]? {
-    let c = v as? [Double]
-    return c?.count == 4 && c![0] != 0 && c![2] != 0 ? c : nil
+    guard let c = v as? [Double], c.count == 4 || c.count == 8, c[0] != 0, c[2] != 0 else { return nil }
+    guard c.count == 8 else { return c }
+    func rising(_ a: Double, _ b: Double, _ lo: Double, _ hi: Double) -> Bool {
+        a > 0 && lo < a * calInner + b && hi > a * (1 - calInner) + b
+    }
+    return rising(c[0], c[1], c[4], c[5]) && rising(c[2], c[3], c[6], c[7]) ? c : Array(c.prefix(4))
 }
 func calibration(_ id: String?) -> [Double] {
     id.flatMap { validCal(screens[$0]?["cal"]) } ?? (id == nil ? cfg.cal : identityCal)

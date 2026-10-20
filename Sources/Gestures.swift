@@ -30,7 +30,7 @@ var lastTapTime = 0.0, lastTapPt = CGPoint.zero, clicks: Int64 = 1
 var pressClicks: Int64 = 1, dragClicks: Int64 = 1   // click count of this touch, and of the drag it made
 var accX = 0.0, accY = 0.0
 var pinchStart = 0.0, pinchLast = 0.0, zoomKeyAcc = 0.0
-var inDragApp = false, zoomHere = "gesture"   // decided per gesture from the window under the finger(s)
+var inDragApp = false, canHold = true, zoomHere = "gesture"   // decided per gesture from the window under the finger(s)
 var edgeSnap: CGPoint?, dragOffset = CGPoint.zero   // window-edge resize: press point on the edge, finger offset
 func shifted(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x + dragOffset.x, y: p.y + dragOffset.y) }
 let src = CGEventSource(stateID: .hidSystemState)
@@ -287,14 +287,15 @@ func commit() {
             let onTitlebar = win.map { $0.layer == 0 && p.y - $0.frame.minY < cfg.titlebar } ?? false
             let onDesktop = win == nil   // nothing to scroll there: select and move icons instead
             inDragApp = cfg.dragApps.contains(app) || onTitlebar || edgeSnap != nil || onDesktop
+            canHold = !cfg.dragApps.contains(app) && edgeSnap == nil   // a press there is only ever a drag
             if inDragApp { log("down \(onDesktop ? "on the desktop" : "in " + app)\(edgeSnap != nil ? " window edge" : onTitlebar ? " title bar" : ""): drag mode") }
             pressClicks = now() - lastTapTime < dblSecs() && dist(p, lastTapPt) < dblDist ? min(clicks + 1, 3) : 1
             pressSeq += 1
             let seq = pressSeq
             mode = .pending(p, seq)
             DispatchQueue.main.asyncAfter(deadline: .now() + cfg.hold) {   // a second or third tap never holds
-                guard case .pending(let s, let q) = mode, q == seq, !inDragApp, pressClicks == 1 else { return }
-                if cfg.oneFingerScroll {
+                guard case .pending(let s, let q) = mode, q == seq, canHold, pressClicks == 1 else { return }
+                if cfg.oneFingerScroll || inDragApp {   // the ring, so that moving after the hold still drags
                     mode = .held(s); log("hold at \(Int(s.x)),\(Int(s.y))")
                     holdRing.show(at: s, duration: heldRightClickSecs)
                     // Still holding without moving: right click now rather than waiting for the lift.

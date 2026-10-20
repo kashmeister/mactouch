@@ -3,7 +3,8 @@ import AppKit
 // MARK: calibration wizard
 
 // Full-screen targets on the touch display. Each tap's touch-down point, before calibration, is
-// paired with its target; a per-axis least-squares line gives the new calibration.
+// paired with its target: a per-axis least-squares line from the targets inset from the edges, and
+// the touched value at targets near each edge, where touch panels read inward (see applyCal).
 final class CalibrationWindow: NSWindow { override var canBecomeKey: Bool { true } }
 
 final class CalibrationView: NSView {
@@ -31,7 +32,9 @@ final class CalibrationView: NSView {
 }
 
 final class Calibrator: NSObject {
-    let targets: [CGPoint] = (0..<2).flatMap { _ in [0.1, 0.5, 0.9].flatMap { y in [0.05, 0.5, 0.95].map { x in CGPoint(x: x, y: y) } } }
+    // A grid inset from the edges, then one at the edges and corners (and the centre again).
+    let targets: [CGPoint] = [([0.05, 0.5, 0.95], [0.1, 0.5, 0.9]), ([calEdge, 0.5, 1 - calEdge], [calEdge, 0.5, 1 - calEdge])]
+        .flatMap { xs, ys in ys.flatMap { y in xs.map { x in CGPoint(x: x, y: y) } } }
     var window: NSWindow?, view: CalibrationView?, idle: Timer?
     var index = 0, finished = false, message = ""
     var samples: [(target: CGPoint, touch: CGPoint)] = [], dots: [CGPoint] = []
@@ -88,9 +91,22 @@ final class Calibrator: NSObject {
             let a = sxx > 0 ? sxy / sxx : 1
             return (a, my - a * mx)
         }
-        let (ax, bx) = fit(samples.map { $0.target.x }, samples.map { $0.touch.x })
-        let (ay, by) = fit(samples.map { $0.target.y }, samples.map { $0.touch.y })
-        let new = [ax, bx, ay, by].map { ($0 * 10000).rounded() / 10000 }
+        // Per panel axis: the line through the targets away from its edges, and the mean touched value
+        // at the targets near each edge.
+        func axis(_ k: KeyPath<CGPoint, CGFloat>) -> (a: Double, b: Double, edges: [Double]) {
+            let inner = samples.filter { abs($0.target[keyPath: k] - 0.5) < 0.5 - calEdge - 0.001 }
+            let (a, b) = fit(inner.map { $0.target[keyPath: k] }, inner.map { $0.touch[keyPath: k] })
+            let edges = [calEdge, 1 - calEdge].map { t in
+                let at = samples.filter { abs($0.target[keyPath: k] - t) < 0.001 }.map { Double($0.touch[keyPath: k]) }
+                return at.reduce(0, +) / Double(max(at.count, 1))
+            }
+            // Further than 4% off the line is a missed target rather than the panel reading inward.
+            let plausible = zip([calEdge, 1 - calEdge], edges).allSatisfy { abs($1 - (a * $0 + b)) < 0.04 }
+            return (a, b, plausible ? edges : [])
+        }
+        let cx = axis(\.x), cy = axis(\.y), (ax, bx, ay, by) = (cx.a, cx.b, cy.a, cy.b)
+        let edges = cx.edges.count == 2 && cy.edges.count == 2 ? cx.edges + cy.edges : []
+        let new = validCal(([ax, bx, ay, by] + edges).map { ($0 * 10000).rounded() / 10000 }) ?? identityCal
         let d = targetDisplay(), b = CGDisplayBounds(d)
         func meanError(_ c: [Double]) -> Double {   // in display points
             samples.reduce(0) { s, x in

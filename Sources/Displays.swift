@@ -83,7 +83,7 @@ struct PanelTransform {
     /// fractions. Display axis i reads panel axis j, maybe flipped (x_i = p_j or 1 - p_j), so touched
     /// x = a·t + b becomes touched p = a·t' + b, or a·t' + (1 - a - b) when flipped.
     func calibrationToPanel(_ c: [Double]) -> [Double] {
-        var out = c
+        var out = Array(c.prefix(4))   // calibrations that old have no edge values
         let o = toDisplay(.zero), ex = toDisplay(CGPoint(x: 1, y: 0))
         for i in 0..<2 {   // display axis: 0 = x, 1 = y
             let a = c[2 * i], b = c[2 * i + 1]
@@ -101,10 +101,24 @@ func transform(on d: CGDirectDisplayID, fixes: Bool = true) -> PanelTransform {
     PanelTransform(rotation: Int(CGDisplayRotation(d)), swap: fixes && cfg.swap, flipX: fixes && cfg.flipX, flipY: fixes && cfg.flipY)
 }
 
-/// Calibration is kept in panel fractions, so it holds in every rotation: touched = a × target + b per
-/// panel axis, inverted on every point.
+/// Calibration is kept in panel fractions, so it holds in every rotation. Per panel axis it is a line,
+/// touched = a × target + b, inverted on every point: [ax, bx, ay, by]. Touch panels read inward near
+/// their edges, so it may also hold the touched value measured calEdge from each edge: [..., x at the
+/// low edge, x at the high edge, y low, y high]. Within calInner of an edge, touches then map along
+/// the line from that point to the main line, and beyond it.
+let calEdge = 0.02, calInner = 0.1
 func applyCal(_ f: CGPoint, _ c: [Double]) -> CGPoint {
-    CGPoint(x: min(max((f.x - c[1]) / c[0], 0), 1), y: min(max((f.y - c[3]) / c[2], 0), 1))
+    func axis(_ u: Double, _ a: Double, _ b: Double, _ edges: (lo: Double, hi: Double)?) -> Double {
+        var t = (u - b) / a
+        if let e = edges, t < calInner {
+            t = calEdge + (u - e.lo) * (calInner - calEdge) / (a * calInner + b - e.lo)
+        } else if let e = edges, t > 1 - calInner {
+            t = 1 - calEdge - (e.hi - u) * (calInner - calEdge) / (e.hi - a * (1 - calInner) - b)
+        }
+        return min(max(t, 0), 1)
+    }
+    let edged = c.count == 8
+    return CGPoint(x: axis(f.x, c[0], c[1], edged ? (c[4], c[5]) : nil), y: axis(f.y, c[2], c[3], edged ? (c[6], c[7]) : nil))
 }
 
 /// A contact's display fraction on the active screen, calibrated. `on` is for pairing a new screen:
