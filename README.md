@@ -353,6 +353,12 @@ Displays. 0° and 180° are tested; for 90° or 270°, or a panel mounted differ
 
 **Touches are offset.** Run **Calibrate Touch…**.
 
+**Part of the screen is dead, or touches there jump to the nearest edge or keep dropping out.**
+Unplug the monitor, wait 15 s and plug it back in without touching the screen. A capacitive panel
+measures its untouched state when it powers up; a hand or cable on it at that moment leaves that area
+misread until the next power-up. `MacTouch --probe --raw` shows the raw positions, if it persists.
+Calibrate again afterwards, as calibration taps in that area were misread too.
+
 **Touches go to the wrong display.** Choose **Touchscreens ▸ name ▸ Pair with Display…** and touch
 the screen. The status line names the display each screen uses; `--check` lists vendor and model.
 
