@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build MacTouch, copy it to ~/Applications and run it at login as a per-user launch agent.
-#   ./install.sh [options]   options are saved as settings; see the header of MacTouch.swift
+#   ./install.sh [options]   options are saved as settings; see build/MacTouch.app/Contents/MacOS/MacTouch --help
 #   e.g. ./install.sh --one-finger-scroll --drag-apps=AssistiveControl,eqMac
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -11,6 +11,7 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/MacTouch.log"
 
 "$DIR/build.sh"
+if [[ " $* " == *" --help "* ]]; then "$DIR/build/MacTouch.app/Contents/MacOS/MacTouch" --help; exit 0; fi
 "$DIR/build/MacTouch.app/Contents/MacOS/MacTouch" "$@" --check >/dev/null || { echo "invalid options: $*" >&2; exit 2; }
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true

@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 APP=build/MacTouch.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
-swiftc -O -swift-version 5 -o "$APP/Contents/MacOS/MacTouch" MacTouch.swift
+swiftc -O -swift-version 5 -o "$APP/Contents/MacOS/MacTouch" Sources/*.swift
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -20,9 +20,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>3.1.2</string>
+    <string>3.2.0</string>
     <key>CFBundleVersion</key>
-    <string>3.1.2</string>
+    <string>3.2.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>

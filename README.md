@@ -20,14 +20,17 @@ UPERFECT 14" OLED 3K portable monitor. Its controller comes up in either mode.
 
 To check a monitor, run `MacTouch --check` (see [Usage](#usage)): it lists the displays, the touch
 screens it found and what it does with each. `hidutil list` shows USB IDs and usage pages (13 is a
-digitizer). For screens not listed here, see [Configuration](#configuration).
+digitizer). Most screens of the first two kinds work without any setup. A controller of the third
+kind needs an entry describing its reports in `Sources/KnownDevices.swift`;
+[CONTRIBUTING.md](CONTRIBUTING.md) explains how to work one out with `MacTouch --capture`, and how to
+report a screen that works.
 
 ## Why
 
 macOS has no touchscreen support. A HID multi-touch digitizer is claimed by the generic HID driver,
 but touches go nowhere: the pointer does not move and nothing clicks. Screens that emulate a mouse do
 move the pointer, but on the wrong display whenever there is more than one. Other drivers fix the
-first case (see [Alternatives](#alternatives)); this one handles all three in about 3,000 lines of
+first case (see [Alternatives](#alternatives)); this one handles all three in about 3,700 lines of
 Swift, with per-app behaviour, two-finger scrolling, calibration and per-screen settings.
 
 ## How it works
@@ -39,15 +42,16 @@ events with CGEvent:
 - **Digitizers** are opened with IOHIDManager, without seizing them; MacTouch reads the finger slots
   of each report: tip switch, X and Y. If a digitizer has an Input Mode feature, MacTouch sets it to
   multi-touch, as Windows does.
-- **Single-touch screens** are read the same way. macOS keeps turning their reports into pointer
-  events on the display the cursor is on, and taking the device away from macOS is not possible, so
-  an event tap drops those events: hardware pointer events while that screen is touched, or within
-  80 ms of its last report. MacTouch's own events pass. If MacTouch stops, the screen goes back to
-  macOS's handling.
+- **Single-touch screens** would otherwise move the pointer themselves, on whichever display the
+  cursor is on. While MacTouch drives one (paired, display connected, not paused) it takes the device
+  from macOS for itself (an exclusive HID open), reads it the same way, and posts its own events on
+  the paired display. When MacTouch stops driving it, or quits, macOS handles it again. Should taking
+  it fail, an event tap drops the clicks macOS makes from it instead.
 - **Interfaces without a driver** are opened directly with IOUSBHost, which needs no driver or
-  entitlement for an interface nobody has claimed, and their reports are decoded with a known layout.
-  MacTouch also takes such a device from macOS as soon as it appears and configures it without
-  interface drivers, so macOS's HID driver does not get to it first.
+  entitlement for an interface nobody has claimed, and their reports are decoded with the layout
+  listed for the controller in `Sources/KnownDevices.swift`. For a controller that changes mode once
+  macOS's HID driver reads it, like the CX158, MacTouch also takes the whole USB device from macOS
+  the moment it appears and configures it without interface drivers, so that driver never gets to it.
   For the CX158: report ID 1, ten 5-byte contact slots (finger-down bit, contact ID, X 0–32767,
   Y 0–20479) and the contact count.
 
@@ -173,7 +177,7 @@ moved CX158 touches onto the right display; `install.sh` stops and removes it.
 | Settings UI | ✅ menu bar | ✅ window | ✅ menu bar and window | ❌ JSON file | ✅ |
 | Prebuilt download | ❌ build from source | ✅ notarized | ➖ not notarized | ❌ build from source | ✅ |
 | Permissions survive updates | ✅ | ✅ signed app | ❌ re-add after updates | ❓ | ✅ signed app |
-| Source size | ~3,000 lines of Swift | ~4,200 lines | ~2,500 lines with tests | ~28,000 lines with tests | closed |
+| Source size | ~3,700 lines of Swift with tests | ~4,200 lines | ~2,500 lines with tests | ~28,000 lines with tests | closed |
 
 ✅ supported · ➖ partly · ❌ not supported · ❓ not verified. Compiled from each project's source and README in
 October 2026; UPDD from Touch-Base's documentation, not tested here. Corrections welcome.
@@ -231,7 +235,7 @@ touch screen is missing; the first lines of the menu say which.
 | Calibrate Touch… | Run the calibration wizard on the screen touched last |
 | Undo Calibration | Switch back to the calibration before the last change; choose it again to redo |
 | Reset Calibration | Go back to an uncalibrated mapping; Undo restores the calibration |
-| Touchscreens | One submenu per known screen, connected or not: its kind and display; Pair with Display…; Calibrate…, Undo and Reset Calibration; One-Finger Scroll; Mode (Automatic, Multi-Touch, Single Touch, Not a Touchscreen); Forget This Touchscreen |
+| Touchscreens | One submenu per known screen, connected or not: its kind and display; Pair with Display…; Calibrate Touch…, Undo and Reset Calibration; One-Finger Scroll; Mode (Automatic, Multi-Touch, Single Touch, Not a Touchscreen); Forget This Touchscreen |
 | Open Log | Open `~/Library/Logs/MacTouch.log` |
 | Quit MacTouch | Quit until the next login |
 
@@ -288,7 +292,7 @@ and Done.
 
 Fingers land slightly below the point they aim at, and the touch layer may not line up exactly with
 the picture. **Calibrate Touch…** shows a red cross at 9 positions, twice each, on the screen touched
-last (or **Touchscreens ▸ name ▸ Calibrate…** for a given one). Tap the centre of each one; Esc
+last (or **Touchscreens ▸ name ▸ Calibrate Touch…** for a given one). Tap the centre of each one; Esc
 cancels. MacTouch fits a straight line per axis from where the taps landed, saves it in that screen's
 profile, and shows the average error before and after. The calibration is kept in the touch panel's
 own axes, so it stays right when the display is rotated.
@@ -306,7 +310,10 @@ The app's executable is `~/Applications/MacTouch.app/Contents/MacOS/MacTouch`.
 | `MacTouch --check` | Print displays, touch screens and what MacTouch does with each, profiles, permissions and settings, then exit |
 | `MacTouch --save [options]` | Store settings and exit; restart MacTouch to apply them |
 | `MacTouch --reset` | Forget all settings and exit |
-| `MacTouch --probe [--raw]` | Log contacts (or every HID value) without posting events |
+| `MacTouch --probe [--raw]` | Log contacts without posting events (`--raw`: also every HID value and every raw report) |
+| `MacTouch --help` | List the commands and settings options |
+| `MacTouch --self-test` | Check the coordinate maths and the known controllers' report layouts |
+| `MacTouch --capture=VID:PID[:INTERFACE]` | Take a USB device from macOS and print its descriptors and reports, for adding a controller (see [CONTRIBUTING.md](CONTRIBUTING.md)) |
 | `launchctl kickstart -k gui/$(id -u)/local.mactouch` | Restart MacTouch |
 | `tail -f ~/Library/Logs/MacTouch.log` | Follow the log; taps, drags, scrolls and zooms are logged |
 | `./uninstall.sh` | Stop and remove MacTouch |
@@ -405,8 +412,13 @@ only profile when no `--vid` is given. Settings from 3.0 and older become the fi
 
 Other touch screens work if their controller is a HID digitizer with Finger collections (usage page
 `0x0D`, usage `0x22`) holding tip switch and X/Y, or an absolute-position mouse (X/Y not relative,
-plus a button). Interfaces without a driver need their report layout added to `rawFormats` in
-`MacTouch.swift`.
+plus a button). Interfaces without a driver need an entry in `Sources/KnownDevices.swift`; see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Contributing
+
+Support for more screens, reports of screens that work, and fixes are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the code layout, testing, and adding a touch controller.
 
 ## Uninstall
 
