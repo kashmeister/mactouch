@@ -162,3 +162,53 @@ func autoKeyboardTick() {
         }
     }
 }
+
+// MARK: turning the keyboard on and off
+
+// The Accessibility Keyboard's switch in System Settings ▸ Accessibility ▸ Keyboard, through the
+// UniversalAccess functions System Settings calls. They are private, so MacTouch looks them up at run
+// time and leaves the keyboard alone (the menu item disabled) where they are missing.
+let keyboardSwitch: (isOn: @convention(c) () -> Bool, set: @convention(c) (Bool) -> Void)? = {
+    guard let h = dlopen("/System/Library/PrivateFrameworks/UniversalAccess.framework/UniversalAccess", RTLD_LAZY),
+          let isOn = dlsym(h, "UAVirtualKeyboardIsEnabled"), let set = dlsym(h, "UAVirtualKeyboardSetEnabled") else {
+        log("cannot switch the Accessibility Keyboard on and off on this macOS"); return nil
+    }
+    return (unsafeBitCast(isOn, to: (@convention(c) () -> Bool).self), unsafeBitCast(set, to: (@convention(c) (Bool) -> Void).self))
+}()
+
+/// Whether the Accessibility Keyboard is on; nil if MacTouch cannot tell.
+func keyboardOn() -> Bool? { keyboardSwitch?.isOn() }
+
+let keyboardWasMinimized = "keyboardWasMinimized", keyboardOffForNoTouchscreen = "keyboardOffForNoTouchscreen"
+
+func setKeyboard(_ on: Bool, _ why: String) {
+    guard let sw = keyboardSwitch, sw.isOn() != on else { return }
+    if !on { defaults.set(keyboardButton("Keyboard") != nil, forKey: keyboardWasMinimized) }
+    sw.set(on)
+    log("Accessibility Keyboard \(on ? "on" : "off") (\(why))")
+    guard on else { return }
+    // It comes back expanded and centred: minimize it again if it was, and put its panels where they were.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+        if defaults.bool(forKey: keyboardWasMinimized), AXIsProcessTrusted(), let b = keyboardButton("Minimize") { clickKeyboard(b) }
+    }
+    scheduleRestore([1.5, 4], "keyboard on")
+}
+
+// With no touchscreen connected for 10 s (longer than a replug or a controller changing mode), the
+// keyboard goes off; it comes back when a touchscreen connects, if MacTouch turned it off. That is
+// remembered across restarts, and turning it on by hand in between is left alone.
+var noTouchscreenSince: Double?
+func keyboardFollowTouchscreens() {
+    guard cfg.keyboardFollowsTouch, hidOpen, !probe, !checkOnly else { return }
+    let key = keyboardOffForNoTouchscreen
+    if !touchDevices().isEmpty {
+        noTouchscreenSince = nil
+        if defaults.bool(forKey: key) { defaults.removeObject(forKey: key); setKeyboard(true, "a touchscreen is connected") }
+    } else if let since = noTouchscreenSince {
+        if now() - since > 10, keyboardOn() == true, !defaults.bool(forKey: key) {
+            setKeyboard(false, "no touchscreen connected"); defaults.set(true, forKey: key)
+        }
+    } else {
+        noTouchscreenSince = now()
+    }
+}

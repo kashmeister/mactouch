@@ -225,8 +225,10 @@ touch screen is missing; the first lines of the menu say which.
 | One-Finger Scroll | iPad-style scrolling, see [How it works](#how-it-works). Per screen: with several connected, the item names the screen touched last |
 | Two-Finger Tap Right-Clicks | Two-finger tap as a right click (multi-touch screens only) |
 | Invert Scrolling | Reverse both scroll gestures |
-| Auto Keyboard | Expand the minimized Accessibility Keyboard when a tap puts the focus in a text field, and minimize it again after you leave |
-| Keep Keyboard Position | Put the Accessibility Keyboard back where it was after display sleep, wake and unlock |
+| Accessibility Keyboard ▸ Show Keyboard | Turn the macOS Accessibility Keyboard on or off: the switch in System Settings ▸ Accessibility ▸ Keyboard, set through the private UniversalAccess function System Settings uses (greyed out on a macOS without it) |
+| Accessibility Keyboard ▸ Off While No Touchscreen Is Connected | Turn the keyboard off once no touch screen has been connected for 10 s, and back on, minimized again if it was and where it was, when one connects. Only a keyboard MacTouch turned off comes back |
+| Accessibility Keyboard ▸ Keep Keyboard Position | Put the keyboard back where it was after display sleep, wake and unlock |
+| Accessibility Keyboard ▸ Auto Keyboard | Expand the minimized keyboard when a tap puts the focus in a text field, and minimize it again after you leave |
 | Pinch | Trackpad zoom, ⌘+ / ⌘− keys, or off (multi-touch screens only) |
 | Long Press | Hold time, per screen |
 | Scroll Speed | Scroll speed |
@@ -415,6 +417,7 @@ switches take `=false` to turn them off.
 | `--piano-sound=` | `0` | Music piano General MIDI program; the bar lists the built-in choices |
 | `--auto-keyboard` | on | Expand the minimized Accessibility Keyboard for text fields focused by touch |
 | `--keep-keyboard` | on | Restore the Accessibility Keyboard's position after display sleep |
+| `--keyboard-follows-touch` | on | Turn the Accessibility Keyboard off while no touch screen is connected, and back on with one |
 | `--swipes=` | `3` | Multi-finger swipes with three or four fingers (`3`), four only (`4`), or `off` |
 
 App names are window owner names, usually the name shown in Activity Monitor.

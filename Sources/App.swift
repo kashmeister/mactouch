@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let before = devices.values.map { $0.display }
             refreshDisplays()
             if devices.values.map({ $0.display }) != before { self?.updateIcon() }
+            keyboardFollowTouchscreens()
         }.tolerance = 1
         IOHIDManagerScheduleWithRunLoop(mgr, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
 
@@ -144,8 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             obj: ["oneFingerScroll", mp as Any])
         add(menu, "Two-Finger Tap Right-Clicks" + only, #selector(toggle(_:)), on: cfg.twoFingerTap, obj: ["twoFingerTap"], enabled: multi)
         add(menu, "Invert Scrolling", #selector(toggle(_:)), on: cfg.invertScroll, obj: ["invertScroll"])
-        add(menu, "Keep Keyboard Position", #selector(toggle(_:)), on: cfg.keepKeyboard, obj: ["keepKeyboard"])
-        add(menu, "Auto Keyboard", #selector(toggle(_:)), on: cfg.autoKeyboard, obj: ["autoKeyboard"])
+        keyboardItems(menu)
         choices(menu, "Pinch" + only, "zoom", cfg.zoom, [("Trackpad Zoom", "gesture"), ("⌘+ / ⌘− Keys", "keys"), ("Off", "off")]).isEnabled = multi
         choices(menu, "Long Press" + suffix, "hold", p["hold"] as? Double ?? cfg.hold,
                 [0.4, 0.5, 0.6, 0.8, 1.0].map { (String(format: "%.1f s", $0), $0) }, profile: mp)
@@ -228,6 +228,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "Touchscreens", action: nil, keyEquivalent: "").submenu = sub
     }
 
+    func keyboardItems(_ menu: NSMenu) {
+        let sub = NSMenu(); sub.autoenablesItems = false
+        add(sub, "Show Keyboard", #selector(toggleKeyboard(_:)), on: keyboardOn() == true, enabled: keyboardOn() != nil)
+        sub.addItem(.separator())
+        add(sub, "Off While No Touchscreen Is Connected", #selector(toggle(_:)), on: cfg.keyboardFollowsTouch, obj: ["keyboardFollowsTouch"],
+            enabled: keyboardOn() != nil)
+        add(sub, "Keep Keyboard Position", #selector(toggle(_:)), on: cfg.keepKeyboard, obj: ["keepKeyboard"])
+        add(sub, "Auto Keyboard", #selector(toggle(_:)), on: cfg.autoKeyboard, obj: ["autoKeyboard"])
+        menu.addItem(withTitle: "Accessibility Keyboard", action: nil, keyEquivalent: "").submenu = sub
+    }
+
     func ringColors(_ menu: NSMenu) {
         let presets = [("Gauge Orange", "#FF6A00"), ("Amber", "#FFB000"), ("White", "#FFFFFF"),
                        ("Green", "#34C759"), ("Red", "#FF3B30"), ("Accent Color", "accent")]
@@ -268,6 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "invertScroll": return cfg.invertScroll
         case "keepKeyboard": return cfg.keepKeyboard
         case "autoKeyboard": return cfg.autoKeyboard
+        case "keyboardFollowsTouch": return cfg.keyboardFollowsTouch
         default: return false
         }
     }
@@ -281,6 +293,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setSetting(key, !value(key, id), profile: id)
         if key == "paused" { updateSeizes() }   // paused screens go back to macOS
         updateIcon()
+    }
+    @objc func toggleKeyboard(_ s: NSMenuItem) {   // by hand: it is no longer MacTouch's to turn back on
+        defaults.removeObject(forKey: keyboardOffForNoTouchscreen)
+        setKeyboard(!(keyboardOn() ?? true), "from the menu")
     }
     @objc func toggleEdge(_ s: NSMenuItem) { setSetting("edge", cfg.edge > 0 ? 0.0 : 12.0) }
     @objc func choose(_ s: NSMenuItem) {

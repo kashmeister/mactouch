@@ -8,6 +8,7 @@ struct Config {
     var flipX = false, flipY = false, swap = false
     var cal: [Double] = [1, 0, 1, 0]
     var oneFingerScroll = false, twoFingerTap = false, invertScroll = false, paused = false, keepKeyboard = true, autoKeyboard = true
+    var keyboardFollowsTouch = true
     var pianoOctaves = 3, pianoSound = 0, pianoShift = 0, pianoDynamics = false
     var musicMode = "piano", strumSound = 46, thereminWave = 0, thereminSnap = false, metronomeBPM = 0
     var hold = 0.6, scrollScale = 1.0, zoomScale = 1.0, titlebar = 44.0
@@ -20,7 +21,10 @@ let identityCal: [Double] = [1, 0, 1, 0]
 // MARK: command line
 
 enum OptionKind { case bool, double, int, string, zoom, swipes, list, cal, color }
-struct Option { let flag: String, key: String, kind: OptionKind, help: String }
+struct Option {
+    let flag: String, key: String, kind: OptionKind, help: String
+    var spelled: String { flag + (kind == .bool ? "" : "=") }
+}
 
 /// Settings options. Applied for one run, or stored with --save; the menu sets most of them too.
 /// The first group are screen settings, kept in a touchscreen's profile.
@@ -45,6 +49,7 @@ let options = [
     Option(flag: "--edge", key: "edge", kind: .double, help: "touches this close to a window edge resize it (12; 0 off)"),
     Option(flag: "--swipes", key: "swipes", kind: .swipes, help: "multi-finger swipes with 3 or 4 fingers (3), 4 only (4), or off"),
     Option(flag: "--auto-keyboard", key: "autoKeyboard", kind: .bool, help: "expand the Accessibility Keyboard when a touch focuses a text field (on)"),
+    Option(flag: "--keyboard-follows-touch", key: "keyboardFollowsTouch", kind: .bool, help: "turn the Accessibility Keyboard off while no touchscreen is connected, and back on with one (on)"),
     Option(flag: "--keep-keyboard", key: "keepKeyboard", kind: .bool, help: "put the Accessibility Keyboard back after display sleep and unlock (on)"),
     Option(flag: "--ring-color", key: "ringColor", kind: .color, help: "hold ring colour, #RRGGBB or accent (#FF6A00)"),
     Option(flag: "--ink-predict", key: "inkPredict", kind: .double, help: "whiteboard lines run this many ms ahead of the finger (8; 0 to 50)"),
@@ -63,7 +68,7 @@ usage: MacTouch [settings]            run; normally started at login by its laun
                                       take a USB device and print its reports (see CONTRIBUTING.md)
 settings (numbers decimal or 0x hex; switches take =false to turn off):
 
-""" + options.map { "  " + ($0.flag + ($0.kind == .bool ? "" : "=")).padding(toLength: 22, withPad: " ", startingAt: 0) + $0.help }
+""" + options.map { o in "  " + o.spelled.padding(toLength: options.map(\.spelled.count).max()! + 2, withPad: " ", startingAt: 0) + o.help }
     .joined(separator: "\n")
 
 func num(_ s: Substring) -> Int? { s.hasPrefix("0x") ? Int(s.dropFirst(2), radix: 16) : Int(s) }
@@ -176,7 +181,7 @@ func loadConfig() -> Config {
     rd("ringColor", \.ringColor); rd("zoom", \.zoom); rd("swipes", \.swipes); rd("edge", \.edge); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
     rd("pianoOctaves", \.pianoOctaves); rd("pianoSound", \.pianoSound); rd("pianoShift", \.pianoShift); rd("pianoDynamics", \.pianoDynamics)
     rd("musicMode", \.musicMode); rd("strumSound", \.strumSound); rd("thereminWave", \.thereminWave)
-    rd("thereminSnap", \.thereminSnap); rd("metronomeBPM", \.metronomeBPM); rd("autoKeyboard", \.autoKeyboard)
+    rd("thereminSnap", \.thereminSnap); rd("metronomeBPM", \.metronomeBPM); rd("autoKeyboard", \.autoKeyboard); rd("keyboardFollowsTouch", \.keyboardFollowsTouch)
     rd("inkPredict", \.inkPredict); c.inkPredict = min(max(c.inkPredict, 0), 50)
     c.pianoOctaves = min(max(c.pianoOctaves, 1), 6); c.pianoSound = min(max(c.pianoSound, 0), 127)
     c.cal = validCal(c.cal) ?? identityCal
