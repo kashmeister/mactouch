@@ -61,6 +61,12 @@ func runSelfTest() -> Never {
     let rest = [CGPoint(x: 10, y: 20), CGPoint(x: 11, y: 21), CGPoint(x: 12, y: 19), CGPoint(x: 25, y: 33)]
     expect(near(median(rest), CGPoint(x: 11.5, y: 20.5)), "a tap rests at its median, not at a stray report")
 
+    // Momentum: the release speed leaves out the lift-off jump, and a finger that stopped gets none.
+    let flick = (0..<8).map { (t: 100 + Double($0) * 0.01, dx: 0.0, dy: 10.0) } + [(t: 100.08, dx: 0.0, dy: -30.0)]
+    let v = releaseVelocity(flick, at: 100.09)
+    expect(v.map { abs($0.x) < 1e-6 && abs($0.y - 1000) < 1e-6 } == true, "release speed 1000 pt/s, without the lift-off jump: \(String(describing: v))")
+    expect(releaseVelocity(flick, at: 100.2) == nil, "no momentum after the finger stopped")
+
     // Report layouts against their recorded samples.
     for k in knownControllers {
         guard let raw = k.raw else { continue }

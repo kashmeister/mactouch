@@ -11,7 +11,7 @@ struct Config {
     var keyboardFollowsTouch = true
     var pianoOctaves = 3, pianoSound = 0, pianoShift = 0, pianoDynamics = false
     var musicMode = "piano", strumSound = 46, thereminWave = 0, thereminSnap = false, metronomeBPM = 0
-    var hold = 0.6, scrollScale = 1.0, zoomScale = 1.0, titlebar = 44.0
+    var hold = 0.6, scrollScale = 1.0, momentum = 0.998, zoomScale = 1.0, titlebar = 44.0
     var zoom = "gesture", swipes = "3", edge = 12.0, ringColor = "#FF6A00", inkPredict = 8.0
     var dragApps = ["AssistiveControl"], zoomKeyApps: [String] = []
 }
@@ -40,6 +40,7 @@ let options = [
     Option(flag: "--hold", key: "hold", kind: .double, help: "long-press time in seconds (0.6)"),
     Option(flag: "--two-finger-tap", key: "twoFingerTap", kind: .bool, help: "a two-finger tap right-clicks"),
     Option(flag: "--scroll-scale", key: "scrollScale", kind: .double, help: "scroll speed (1.0)"),
+    Option(flag: "--momentum", key: "momentum", kind: .double, help: "after a scroll, speed kept per millisecond (0.998; 0 off)"),
     Option(flag: "--invert-scroll", key: "invertScroll", kind: .bool, help: "reverse scrolling"),
     Option(flag: "--zoom", key: "zoom", kind: .zoom, help: "pinch as gesture (trackpad zoom), keys (Cmd+/Cmd-) or off"),
     Option(flag: "--zoom-scale", key: "zoomScale", kind: .double, help: "pinch sensitivity (1.0)"),
@@ -178,7 +179,8 @@ func loadConfig() -> Config {
     }
     rd("twoFingerTap", \.twoFingerTap)
     rd("invertScroll", \.invertScroll); rd("paused", \.paused); rd("keepKeyboard", \.keepKeyboard)
-    rd("scrollScale", \.scrollScale); rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
+    rd("scrollScale", \.scrollScale); rd("momentum", \.momentum); c.momentum = min(max(c.momentum, 0), 0.999)
+    rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)
     rd("ringColor", \.ringColor); rd("zoom", \.zoom); rd("swipes", \.swipes); rd("edge", \.edge); rd("dragApps", \.dragApps); rd("zoomKeyApps", \.zoomKeyApps)
     rd("pianoOctaves", \.pianoOctaves); rd("pianoSound", \.pianoSound); rd("pianoShift", \.pianoShift); rd("pianoDynamics", \.pianoDynamics)
     rd("musicMode", \.musicMode); rd("strumSound", \.strumSound); rd("thereminWave", \.thereminWave)

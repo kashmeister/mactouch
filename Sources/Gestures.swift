@@ -87,6 +87,7 @@ func declareUserActivity() {
 func endGesture() {   // release anything held, e.g. when pausing or the controller goes away
     if case .dragging = mode { post(.leftMouseUp, shifted(lastPt), clickState: dragClicks) }
     mode = .idle
+    stopMomentum()
     holdRing.hide()
 }
 
@@ -156,6 +157,58 @@ func scroll(_ dx: Double, _ dy: Double) {
     guard let e = CGEvent(scrollWheelEvent2Source: src, units: .pixel, wheelCount: 2, wheel1: iy, wheel2: ix, wheel3: 0) else { return }
     e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
     e.post(tap: .cghidEventTap)
+}
+
+// MARK: scroll momentum
+
+// As on iOS, a scroll keeps going after the lift at the finger's speed, slowing by cfg.momentum every
+// millisecond (0.998 is UIScrollView's normal rate), and a touch stops it.
+var scrollSamples: [(t: Double, dx: Double, dy: Double)] = []   // this scroll's last 100 ms of moves
+var momentum: (v: CGPoint, last: Double, timer: Timer)?, caughtMomentum = false
+
+func fingerScroll(_ dx: Double, _ dy: Double) {
+    let t = now()
+    scrollSamples.removeAll { t - $0.t > 0.1 }
+    scrollSamples.append((t, dx, dy))
+    scroll(dx, dy)
+}
+
+/// The finger's speed as it lifted, in points per second: its moves over the last 100 ms, leaving out
+/// the last one (as a finger lifts its last report often jumps). Nil if it was not moving by then.
+func releaseVelocity(_ s: [(t: Double, dx: Double, dy: Double)], at t: Double) -> CGPoint? {
+    guard s.count >= 3, let last = s.last, t - last.t < 0.06 else { return nil }
+    let moves = s.dropLast(), span = moves.last!.t - s.first!.t
+    guard span > 0.005 else { return nil }
+    let counted = moves.dropFirst()   // the first move's time only marks the start of the span
+    return CGPoint(x: counted.reduce(0) { $0 + $1.dx } / span, y: counted.reduce(0) { $0 + $1.dy } / span)
+}
+
+func startMomentum() {
+    defer { scrollSamples = [] }
+    guard cfg.momentum > 0, let v0 = releaseVelocity(scrollSamples, at: now()) else { return }
+    let speed = hypot(v0.x, v0.y), cap = min(1, 6000 / max(speed, 1))
+    guard speed > 150 else { return }   // a slow release just stops
+    let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { _ in momentumTick() }
+    RunLoop.main.add(timer, forMode: .common)
+    momentum = (CGPoint(x: v0.x * cap, y: v0.y * cap), now(), timer)
+    log("momentum at \(Int(speed * cap)) pt/s")
+}
+
+func momentumTick() {
+    guard var m = momentum else { return }
+    let t = now(), dt = t - m.last, k = pow(cfg.momentum, dt * 1000)
+    m.v = CGPoint(x: m.v.x * k, y: m.v.y * k); m.last = t
+    guard hypot(m.v.x, m.v.y) > 15, cfg.momentum > 0 else { stopMomentum(); return }
+    momentum = m
+    scroll(m.v.x * dt, m.v.y * dt)
+}
+
+/// Stops the momentum scroll, if any; returns whether one was running.
+@discardableResult
+func stopMomentum() -> Bool {
+    guard let m = momentum else { return false }
+    m.timer.invalidate(); momentum = nil
+    return true
 }
 
 // Trackpad-style magnify: NSEventTypeGesture (29) carrying kIOHIDEventTypeZoom (8). These CGEvent
@@ -262,6 +315,7 @@ func commit() {
     }
     if cfg.paused { mode = .idle; return }
     if n > 0 && lastN == 0 {   // touch-down
+        caughtMomentum = stopMomentum()   // a tap that stops a scroll does nothing else, as on iOS
         let asleep = CGDisplayIsAsleep(targetDisplay()) != 0
         declareUserActivity()
         if asleep { mode = .done; log("touch woke the display"); return }   // wake only, like a phone
@@ -272,17 +326,19 @@ func commit() {
         case .pending(let s, _):
             // An unconfirmed move far beyond the lift-off jump is a quick flick: better no click than one
             // where it started.
-            if unconfirmedMove && dist(lastPt, s) > 3 * moveTol { log("flick too short to scroll or drag") } else { tap(median(restingPts)) }
+            if unconfirmedMove && dist(lastPt, s) > 3 * moveTol { log("flick too short to scroll or drag") }
+            else if caughtMomentum { log("tap stopped the scroll") }
+            else { tap(median(restingPts)) }
         case .held(let s): rightClick(s, "long press")
         case .dragging:
             post(.leftMouseUp, shifted(lastPt), clickState: dragClicks); log("drag end at \(Int(lastPt.x)),\(Int(lastPt.y))")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { rememberKeyboard() }   // the keyboard may have moved
         case .swipe(_, _, let fired): if !fired { log("swipe end (too short)") }
-        case .scroll1: log("scroll end (1 finger)")
+        case .scroll1: log("scroll end (1 finger)"); startMomentum()
         case .two(let c, let t0, let kind):
             switch kind {
             case .zoom: if zoomHere == "gesture" { magnify(0, phase: 4, at: c) }; log("zoom end")
-            case .scroll: log("scroll end")
+            case .scroll: log("scroll end"); startMomentum()
             case .undecided: if cfg.twoFingerTap && now() - t0 < tapMaxSecs { rightClick(twoStart, "two-finger tap") }
             }
         default: break
@@ -327,7 +383,8 @@ func commit() {
                 } else if pressClicks > 1 {   // tap, then touch and move: select by word (or line)
                     startDrag(lastTapPt, p, clicks: pressClicks)
                 } else if cfg.oneFingerScroll && !inDragApp {
-                    mode = .scroll1; accX = 0; accY = 0; scroll(p.x - s.x, p.y - s.y); log("scroll start (1 finger)")
+                    mode = .scroll1; accX = 0; accY = 0; scrollSamples = []
+                    fingerScroll(p.x - s.x, p.y - s.y); log("scroll start (1 finger)")
                 } else { startDrag(s, p) }
             }
         case .held(let s):
@@ -335,7 +392,7 @@ func commit() {
         case .dragging:
             if p != lastPt { post(.leftMouseDragged, shifted(p), clickState: dragClicks) }
         case .scroll1:
-            if lastN == 1 { scroll(p.x - lastPt.x, p.y - lastPt.y) }
+            if lastN == 1 { fingerScroll(p.x - lastPt.x, p.y - lastPt.y) }
         default: break   // one finger left over from a two-finger gesture
         }
     default:
@@ -373,11 +430,11 @@ func commit() {
                         if zoomHere == "gesture" { magnify(0, phase: 1, at: c) }
                         log("zoom start (\(zoomHere)) in \(app)")
                     } else if dc > moveTol {
-                        kind = .scroll; log("scroll start (\(n) fingers)")
+                        kind = .scroll; scrollSamples = []; log("scroll start (\(n) fingers)")
                     }
                 }
                 switch kind {
-                case .scroll: scroll(c.x - last.x, c.y - last.y)
+                case .scroll: fingerScroll(c.x - last.x, c.y - last.y)
                 case .zoom: pinch(d, at: c)
                 case .undecided: break
                 }

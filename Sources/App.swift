@@ -151,6 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 [0.4, 0.5, 0.6, 0.8, 1.0].map { (String(format: "%.1f s", $0), $0) }, profile: mp)
         ringColors(menu)
         choices(menu, "Scroll Speed", "scrollScale", cfg.scrollScale, [0.5, 0.75, 1.0, 1.5, 2.0].map { ("\($0)×", $0) })
+        choices(menu, "Scroll Momentum", "momentum", cfg.momentum, [("Default", 0.998), ("Shorter", 0.995), ("Off", 0.0)])
         choices(menu, "Multi-Finger Swipes" + only, "swipes", cfg.swipes,
                 [("Three or Four Fingers", "3"), ("Four Fingers Only", "4"), ("Off", "off")]).isEnabled = multi
         add(menu, "Resize Windows at Edges", #selector(toggleEdge(_:)), on: cfg.edge > 0)

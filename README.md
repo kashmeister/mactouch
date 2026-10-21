@@ -65,6 +65,7 @@ touched.
 | One finger, move | Drag | Scroll |
 | One finger, hold 0.6 s | Right click | Hold then move: drag. Hold then lift, or keep holding still another 0.5 s: right click |
 | Two fingers, move | Scroll | same |
+| Lift while scrolling | The scroll keeps going and slows down, as on iOS; a touch stops it without clicking | same |
 | Two fingers, pinch | Zoom | same |
 | Two fingers, tap | Right click if enabled | same |
 | Three or four fingers, swipe left/right | Switch Space | same |
@@ -235,6 +236,7 @@ touch screen is missing; the first lines of the menu say which.
 | Pinch | Trackpad zoom, ⌘+ / ⌘− keys, or off (multi-touch screens only) |
 | Long Press | Hold time, per screen |
 | Scroll Speed | Scroll speed |
+| Scroll Momentum | How a scroll carries on after the lift: Default (keeps 99.8% of its speed every millisecond), Shorter (99.5%), or Off |
 | Hold Ring Color | Colour of the hold cue ring |
 | Multi-Finger Swipes | Three or four fingers, four only, or off (multi-touch screens only) |
 | Resize Windows at Edges | Drags that start at a window edge resize it |
@@ -409,6 +411,7 @@ switches take `=false` to turn them off.
 | `--two-finger-tap` | off | Two-finger tap right clicks |
 | `--hold=` | `0.6` | Long-press time in seconds |
 | `--scroll-scale=`, `--invert-scroll` | `1.0`, off | Scroll speed and direction |
+| `--momentum=` | `0.998` | Share of a scroll's speed kept every millisecond after the lift (UIScrollView's normal rate); `0` turns momentum off |
 | `--zoom=` | `gesture` | Pinch as trackpad magnify (`gesture`), ⌘+/⌘− (`keys`) or `off` |
 | `--zoom-scale=` | `1.0` | Pinch sensitivity |
 | `--zoom-key-apps=` | none | Apps where pinch sends ⌘+/⌘− |
