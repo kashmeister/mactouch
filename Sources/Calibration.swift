@@ -2,9 +2,10 @@ import AppKit
 
 // MARK: calibration wizard
 
-// Full-screen targets on the touch display. Each tap's touch-down point, before calibration, is
-// paired with its target: a per-axis least-squares line from the targets inset from the edges, and
-// the touched value at targets near each edge, where touch panels read inward (see applyCal).
+// Full-screen targets on the touch display. Where each tap rested (the median of its reports, as for
+// any tap), before calibration, is paired with its target: a per-axis least-squares line from the
+// targets inset from the edges, and the touched value at targets near each edge, where touch panels
+// read inward (see applyCal).
 final class CalibrationWindow: NSWindow { override var canBecomeKey: Bool { true } }
 
 final class CalibrationView: NSView {
@@ -38,7 +39,7 @@ final class Calibrator: NSObject {
     var window: NSWindow?, view: CalibrationView?, idle: Timer?
     var index = 0, finished = false, message = ""
     var samples: [(target: CGPoint, touch: CGPoint)] = [], dots: [CGPoint] = []
-    var down: CGPoint?
+    var touch: [CGPoint] = []   // the current tap's reports
     var active: Bool { window != nil && !finished }
     var currentTarget: CGPoint? { active && index < targets.count ? targets[index] : nil }
 
@@ -55,7 +56,7 @@ final class Calibrator: NSObject {
         w.contentView = v
         w.setFrame(s.frame, display: true)
         window = w; view = v
-        index = 0; finished = false; samples = []; dots = []; down = nil
+        index = 0; finished = false; samples = []; dots = []; touch = []
         prompt()
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
@@ -72,9 +73,10 @@ final class Calibrator: NSObject {
     // Called once per report with the contacts in panel fractions, uncalibrated. Targets are shown in
     // display fractions and fitted in panel fractions, so the calibration holds in every rotation.
     func feed(_ fracs: [CGPoint]) {
-        if let f = fracs.first { if down == nil { down = f }; return }
-        guard let f = down, let t = currentTarget else { return }
-        down = nil
+        if let f = fracs.first { touch.append(f); return }
+        guard !touch.isEmpty, let t = currentTarget else { return }
+        let f = median(touch)
+        touch = []
         let d = targetDisplay()
         let tr = transform(on: d)
         samples.append((tr.toPanel(t), f)); dots.append(tr.toDisplay(applyCal(f, cfg.cal)))

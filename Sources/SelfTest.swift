@@ -52,6 +52,15 @@ func runSelfTest() -> Never {
     expect(validCal(Array(edged.prefix(4)) + [line(0.2), edged[5], edged[6], edged[7]])?.count == 4, "folding edge value dropped")
     expect(validCal([a, b, a]) == nil, "three numbers are no calibration")
 
+    // Taps: a move counts only when the next report confirms it, and a tap rests at its median.
+    unconfirmedMove = false
+    expect([true, true].map(confirmedMove) == [false, true], "a move confirmed by the next report counts")
+    unconfirmedMove = false
+    expect([true, false, true].map(confirmedMove) == [false, false, false], "a one-report jump is not a move")
+    unconfirmedMove = false
+    let rest = [CGPoint(x: 10, y: 20), CGPoint(x: 11, y: 21), CGPoint(x: 12, y: 19), CGPoint(x: 25, y: 33)]
+    expect(near(median(rest), CGPoint(x: 11.5, y: 20.5)), "a tap rests at its median, not at a stray report")
+
     // Report layouts against their recorded samples.
     for k in knownControllers {
         guard let raw = k.raw else { continue }

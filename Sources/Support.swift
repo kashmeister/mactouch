@@ -8,6 +8,11 @@ func fail(_ s: String) -> Never { FileHandle.standardError.write((s + "\n").data
 func hex(_ v: UInt32) -> String { "0x" + String(v, radix: 16) }
 func now() -> Double { ProcessInfo.processInfo.systemUptime }
 func dist(_ a: CGPoint, _ b: CGPoint) -> Double { hypot(a.x - b.x, a.y - b.y) }
+/// Per-axis median: where a touch rested, unmoved by a stray report as the finger lands or lifts.
+func median(_ ps: [CGPoint]) -> CGPoint {
+    func m(_ v: [Double]) -> Double { let s = v.sorted(), n = s.count; return n % 2 == 1 ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2 }
+    return ps.isEmpty ? .zero : CGPoint(x: m(ps.map { Double($0.x) }), y: m(ps.map { Double($0.y) }))
+}
 extension String {
     func ifEmpty(_ s: String) -> String { isEmpty ? s : self }
     var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }

@@ -29,6 +29,15 @@ var lastPt = CGPoint.zero, twoStart = CGPoint.zero
 var lastTapTime = 0.0, lastTapPt = CGPoint.zero, clicks: Int64 = 1
 var pressClicks: Int64 = 1, dragClicks: Int64 = 1   // click count of this touch, and of the drag it made
 var accX = 0.0, accY = 0.0
+// As a finger lifts, its last report often jumps 10 pt or more, which would turn a tap into a drag
+// (in a title bar, a small window move that slides the close button away). A move therefore counts
+// only once the next report still has the finger down and moved. A tap clicks where the touch rested:
+// the median of its reports.
+var unconfirmedMove = false, restingPts: [CGPoint] = []
+func confirmedMove(_ moved: Bool) -> Bool {
+    defer { unconfirmedMove = moved }
+    return moved && unconfirmedMove
+}
 var pinchStart = 0.0, pinchLast = 0.0, zoomKeyAcc = 0.0
 var inDragApp = false, canHold = true, zoomHere = "gesture"   // decided per gesture from the window under the finger(s)
 var edgeSnap: CGPoint?, dragOffset = CGPoint.zero   // window-edge resize: press point on the edge, finger offset
@@ -260,7 +269,7 @@ func commit() {
     switch n {
     case 0:
         switch mode {
-        case .pending(let s, _): tap(s)
+        case .pending: tap(median(restingPts))
         case .held(let s): rightClick(s, "long press")
         case .dragging:
             post(.leftMouseUp, shifted(lastPt), clickState: dragClicks); log("drag end at \(Int(lastPt.x)),\(Int(lastPt.y))")
@@ -281,7 +290,7 @@ func commit() {
         switch mode {
         case .idle:
             post(.mouseMoved, p)
-            dragOffset = .zero
+            dragOffset = .zero; restingPts = [p]; unconfirmedMove = false
             edgeSnap = edgeGrab(p)
             let win = windowAt(p), app = win?.owner ?? ""
             let onTitlebar = win.map { $0.layer == 0 && p.y - $0.frame.minY < cfg.titlebar } ?? false
@@ -306,7 +315,9 @@ func commit() {
                 } else { rightClick(s, "long press"); mode = .done }
             }
         case .pending(let s, _):
-            if dist(p, s) > (pressClicks > 1 ? followTol : moveTol) {   // a second tap may wobble more
+            let moved = dist(p, s) > (pressClicks > 1 ? followTol : moveTol)   // a second tap may wobble more
+            if !moved { restingPts.append(p) }
+            if confirmedMove(moved) {
                 if let snap = edgeSnap {   // resize: press on the edge, then keep the finger's offset
                     dragOffset = CGPoint(x: snap.x - s.x, y: snap.y - s.y)
                     post(.mouseMoved, snap); startDrag(snap, shifted(p))
@@ -317,7 +328,7 @@ func commit() {
                 } else { startDrag(s, p) }
             }
         case .held(let s):
-            if dist(p, s) > moveTol { startDrag(s, p) }
+            if confirmedMove(dist(p, s) > moveTol) { startDrag(s, p) }
         case .dragging:
             if p != lastPt { post(.leftMouseDragged, shifted(p), clickState: dragClicks) }
         case .scroll1:

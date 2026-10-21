@@ -75,8 +75,11 @@ With one-finger scroll, a ring appears under the finger when the hold registers 
 next 0.5 s. Move while it shows to drag; when it is full, the right click fires. Its colour is set
 under **Hold Ring Color** in the menu; the default is a warm gauge orange.
 
-A tap clicks on lift, at the point where the finger landed, so a hold can still become a right
-click. A touch that lands within 0.75 s (or the system's double-click speed, if slower) and 60 pt of a
+A tap clicks on lift, where the finger rested (the median of its positions), so a hold can still
+become a right click. As a finger lifts, many panels report one last position 10 pt or more away;
+a move counts only once the next report confirms it, so that jump never turns a tap into a drag.
+
+A touch that lands within 0.75 s (or the system's double-click speed, if slower) and 60 pt of a
 tap continues it: lifted, it is a double or triple click; moved, it selects by word or
 by line, so text can be selected without turning one-finger scroll off. It may wobble 20 pt before
 it counts as moving, and it never turns into a hold.
