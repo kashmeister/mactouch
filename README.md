@@ -100,9 +100,9 @@ the window under the finger at touch-down:
 - in drag apps one finger always drags. The default is `AssistiveControl`, the macOS Accessibility
   Keyboard. Add apps whose sliders move the wrong way under scrolling, such as `eqMac`.
 
-On the desktop and in title bars, a hold right-clicks too: the ring shows there whether or
-not one-finger scroll is on, so moving while it shows drags as usual. In drag apps and at window
-edges a press only ever drags.
+On the desktop a hold right-clicks too: the ring shows there whether or not one-finger scroll is on,
+so moving while it shows drags as usual. In title bars, drag apps and at window edges a press only
+ever drags.
 
 Posted events do not count as user activity, so MacTouch also declares activity on every
 touch-down. That keeps the display awake while you use it and wakes it from display sleep. A touch
@@ -229,7 +229,7 @@ touch screen is missing; the first lines of the menu say which.
 | Two-Finger Tap Right-Clicks | Two-finger tap as a right click (multi-touch screens only) |
 | Invert Scrolling | Reverse both scroll gestures |
 | Accessibility Keyboard ▸ Show Keyboard | Turn the macOS Accessibility Keyboard on or off: the switch in System Settings ▸ Accessibility ▸ Keyboard, set through the private UniversalAccess function System Settings uses (greyed out on a macOS without it) |
-| Accessibility Keyboard ▸ Off While No Touchscreen Is Connected | Turn the keyboard off once no touch screen has been connected for 10 s, and back on, minimized again if it was and where it was, when one connects. Only a keyboard MacTouch turned off comes back |
+| Accessibility Keyboard ▸ Off While No Touchscreen Is Connected | Turn the keyboard off once no touch screen has been connected for 10 s (not counting time with the displays asleep or the screen locked), and back on, minimized again if it was and where it was, when one connects. Only a keyboard MacTouch turned off comes back; once you switch it yourself, it is left alone until a touch screen connects |
 | Accessibility Keyboard ▸ Keep Keyboard Position | Put the keyboard back where it was after display sleep, wake and unlock |
 | Accessibility Keyboard ▸ Auto Keyboard | Expand the minimized keyboard when a tap puts the focus in a text field, and minimize it again after you leave |
 | Pinch | Trackpad zoom, ⌘+ / ⌘− keys, or off (multi-touch screens only) |
@@ -307,7 +307,8 @@ from the inset taps. Touch panels read inward near their edges, often by 10 pt o
 measures that from the edge taps and corrects touches within 10% of each edge, which keeps menu bar
 items and window buttons in the corners within reach. It saves the result in that screen's profile
 and shows the average error before and after. The calibration is kept in the touch panel's own axes,
-so it stays right when the display is rotated.
+so it stays right when the display is rotated. Since 3.2 a tap counts where the finger rested rather
+than where it first touched, so calibrate again after upgrading from an older version.
 
 On the reference display, calibration moved the mean error from about 17 pt, mostly downward, to
 about 10 pt with no bias. What is left is finger and controller scatter, about ±1 mm. A full affine

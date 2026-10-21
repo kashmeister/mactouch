@@ -290,12 +290,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let key = kv.first as? String else { return }
         let id = kv.count > 1 ? kv[1] as? String : nil
         if key == "paused" { endGesture() }
+        if key == "keyboardFollowsTouch" { defaults.removeObject(forKey: keyboardOffForNoTouchscreen) }
         setSetting(key, !value(key, id), profile: id)
         if key == "paused" { updateSeizes() }   // paused screens go back to macOS
         updateIcon()
     }
-    @objc func toggleKeyboard(_ s: NSMenuItem) {   // by hand: it is no longer MacTouch's to turn back on
-        defaults.removeObject(forKey: keyboardOffForNoTouchscreen)
+    @objc func toggleKeyboard(_ s: NSMenuItem) {   // by hand: no longer MacTouch's to turn on or off
+        defaults.removeObject(forKey: keyboardOffForNoTouchscreen); keyboardHandedBack = true
         setKeyboard(!(keyboardOn() ?? true), "from the menu")
     }
     @objc func toggleEdge(_ s: NSMenuItem) { setSetting("edge", cfg.edge > 0 ? 0.0 : 12.0) }

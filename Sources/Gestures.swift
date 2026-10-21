@@ -269,7 +269,10 @@ func commit() {
     switch n {
     case 0:
         switch mode {
-        case .pending: tap(median(restingPts))
+        case .pending(let s, _):
+            // An unconfirmed move far beyond the lift-off jump is a quick flick: better no click than one
+            // where it started.
+            if unconfirmedMove && dist(lastPt, s) > 3 * moveTol { log("flick too short to scroll or drag") } else { tap(median(restingPts)) }
         case .held(let s): rightClick(s, "long press")
         case .dragging:
             post(.leftMouseUp, shifted(lastPt), clickState: dragClicks); log("drag end at \(Int(lastPt.x)),\(Int(lastPt.y))")
@@ -296,7 +299,7 @@ func commit() {
             let onTitlebar = win.map { $0.layer == 0 && p.y - $0.frame.minY < cfg.titlebar } ?? false
             let onDesktop = win == nil   // nothing to scroll there: select and move icons instead
             inDragApp = cfg.dragApps.contains(app) || onTitlebar || edgeSnap != nil || onDesktop
-            canHold = !cfg.dragApps.contains(app) && edgeSnap == nil   // a press there is only ever a drag
+            canHold = !inDragApp || onDesktop   // in title bars, drag apps and at edges a press is only ever a drag
             if inDragApp { log("down \(onDesktop ? "on the desktop" : "in " + app)\(edgeSnap != nil ? " window edge" : onTitlebar ? " title bar" : ""): drag mode") }
             pressClicks = now() - lastTapTime < dblSecs() && dist(p, lastTapPt) < dblDist ? min(clicks + 1, 3) : 1
             pressSeq += 1
@@ -316,7 +319,7 @@ func commit() {
             }
         case .pending(let s, _):
             let moved = dist(p, s) > (pressClicks > 1 ? followTol : moveTol)   // a second tap may wobble more
-            if !moved { restingPts.append(p) }
+            if !moved && restingPts.count < 30 { restingPts.append(p) }   // the first quarter second or so is plenty
             if confirmedMove(moved) {
                 if let snap = edgeSnap {   // resize: press on the edge, then keep the finger's offset
                     dragOffset = CGPoint(x: snap.x - s.x, y: snap.y - s.y)

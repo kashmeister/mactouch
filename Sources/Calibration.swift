@@ -73,7 +73,7 @@ final class Calibrator: NSObject {
     // Called once per report with the contacts in panel fractions, uncalibrated. Targets are shown in
     // display fractions and fitted in panel fractions, so the calibration holds in every rotation.
     func feed(_ fracs: [CGPoint]) {
-        if let f = fracs.first { touch.append(f); return }
+        if let f = fracs.first { if touch.count < 30 { touch.append(f) }; return }
         guard !touch.isEmpty, let t = currentTarget else { return }
         let f = median(touch)
         touch = []

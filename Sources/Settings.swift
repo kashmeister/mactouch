@@ -58,6 +58,7 @@ let options = [
 ]
 let actionFlags: Set<String> = ["--check", "--save", "--reset", "--probe", "--raw", "--help"]
 
+let optionWidth = options.map(\.spelled.count).max()! + 2
 let usage = """
 usage: MacTouch [settings]            run; normally started at login by its launch agent
        MacTouch --check               print displays, touchscreens, profiles, permissions and settings
@@ -68,7 +69,7 @@ usage: MacTouch [settings]            run; normally started at login by its laun
                                       take a USB device and print its reports (see CONTRIBUTING.md)
 settings (numbers decimal or 0x hex; switches take =false to turn off):
 
-""" + options.map { o in "  " + o.spelled.padding(toLength: options.map(\.spelled.count).max()! + 2, withPad: " ", startingAt: 0) + o.help }
+""" + options.map { "  " + $0.spelled.padding(toLength: optionWidth, withPad: " ", startingAt: 0) + $0.help }
     .joined(separator: "\n")
 
 func num(_ s: Substring) -> Int? { s.hasPrefix("0x") ? Int(s.dropFirst(2), radix: 16) : Int(s) }

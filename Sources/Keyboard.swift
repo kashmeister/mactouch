@@ -196,14 +196,20 @@ func setKeyboard(_ on: Bool, _ why: String) {
 
 // With no touchscreen connected for 10 s (longer than a replug or a controller changing mode), the
 // keyboard goes off; it comes back when a touchscreen connects, if MacTouch turned it off. That is
-// remembered across restarts, and turning it on by hand in between is left alone.
-var noTouchscreenSince: Double?
+// remembered across restarts. Once the keyboard is turned on by hand, it is left alone until a
+// touchscreen connects. Time with the displays asleep or the screen locked doesn't count: some
+// monitors power their USB hub down with the picture.
+var noTouchscreenSince: Double?, keyboardHandedBack = false
 func keyboardFollowTouchscreens() {
     guard cfg.keyboardFollowsTouch, hidOpen, !probe, !checkOnly else { return }
     let key = keyboardOffForNoTouchscreen
     if !touchDevices().isEmpty {
-        noTouchscreenSince = nil
+        noTouchscreenSince = nil; keyboardHandedBack = false
         if defaults.bool(forKey: key) { defaults.removeObject(forKey: key); setKeyboard(true, "a touchscreen is connected") }
+    } else if defaults.bool(forKey: key), keyboardOn() == true {   // turned on by hand (System Settings)
+        defaults.removeObject(forKey: key); keyboardHandedBack = true
+    } else if keyboardHandedBack || screenLocked || CGDisplayIsAsleep(CGMainDisplayID()) != 0 {
+        noTouchscreenSince = nil
     } else if let since = noTouchscreenSince {
         if now() - since > 10, keyboardOn() == true, !defaults.bool(forKey: key) {
             setKeyboard(false, "no touchscreen connected"); defaults.set(true, forKey: key)
