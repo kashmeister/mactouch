@@ -201,12 +201,14 @@ October 2026; UPDD from Touch-Base's documentation, not tested here. Corrections
 ## Requirements
 
 - macOS 26 (tested); earlier versions from 13 may work but are untested
-- Xcode Command Line Tools (`xcode-select --install`), which Homebrew needs as well
+- Apple's Command Line Tools, to build it: `xcode-select --install`. Not the full Xcode app. Homebrew
+  installs them when it is set up, so with Homebrew there is nothing more to install.
 - A touch screen of one of the kinds under [Hardware](#hardware)
 
 ## Install
 
-With [Homebrew](https://brew.sh):
+MacTouch is built on your Mac from source, which needs Apple's Command Line Tools (not Xcode; see
+[Requirements](#requirements)). With [Homebrew](https://brew.sh):
 
 ```sh
 brew install kashmeister/tap/mactouch
