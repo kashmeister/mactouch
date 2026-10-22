@@ -1,9 +1,17 @@
 # MacTouch
 
-A macOS menu bar app that makes USB touch screens usable as touchscreens: tap, drag, right click,
-one- and two-finger scroll, pinch to zoom and multi-finger swipes, with a built-in calibration
-wizard. It detects what kind of touch screen is connected, pairs each one with its display once, and
-remembers its settings.
+A touchscreen driver for macOS. Touch screen monitors that work on Windows without a driver do
+nothing on a Mac, or move the pointer on the wrong display; MacTouch, a menu bar app, makes them work:
+tap, drag, right click, one- and two-finger scrolling with momentum, pinch to zoom and multi-finger
+swipes, with a built-in calibration wizard. It detects what kind of touch screen is connected, pairs
+each one with its display once, and remembers its settings. Known to work with ILITEK multi-touch
+controllers (such as the Wisecoco bar display) and the CX158 portable monitor (sold as the UPERFECT
+14" OLED 3K), and with any USB touch screen that follows the Windows HID standard.
+
+```sh
+brew install kashmeister/tap/mactouch
+brew services start mactouch
+```
 
 ## Hardware
 
@@ -30,7 +38,7 @@ report a screen that works.
 macOS has no touchscreen support. A HID multi-touch digitizer is claimed by the generic HID driver,
 but touches go nowhere: the pointer does not move and nothing clicks. Screens that emulate a mouse do
 move the pointer, but on the wrong display whenever there is more than one. Other drivers fix the
-first case (see [Alternatives](#alternatives)); this one handles all three in about 3,700 lines of
+first case (see [Alternatives](#alternatives)); this one handles all three in about 3,900 lines of
 Swift, with per-app behaviour, two-finger scrolling, calibration and per-screen settings.
 
 ## How it works
@@ -185,7 +193,7 @@ moved CX158 touches onto the right display; `install.sh` stops and removes it.
 | Settings UI | ✅ menu bar | ✅ window | ✅ menu bar and window | ❌ JSON file | ✅ |
 | Prebuilt download | ❌ build from source | ✅ notarized | ➖ not notarized | ❌ build from source | ✅ |
 | Permissions survive updates | ✅ | ✅ signed app | ❌ re-add after updates | ❓ | ✅ signed app |
-| Source size | ~3,700 lines of Swift with tests | ~4,200 lines | ~2,500 lines with tests | ~28,000 lines with tests | closed |
+| Source size | ~3,900 lines of Swift with tests | ~4,200 lines | ~2,500 lines with tests | ~28,000 lines with tests | closed |
 
 ✅ supported · ➖ partly · ❌ not supported · ❓ not verified. Compiled from each project's source and README in
 October 2026; UPDD from Touch-Base's documentation, not tested here. Corrections welcome.
@@ -193,10 +201,23 @@ October 2026; UPDD from Touch-Base's documentation, not tested here. Corrections
 ## Requirements
 
 - macOS 26 (tested); earlier versions from 13 may work but are untested
-- Xcode Command Line Tools
+- Xcode Command Line Tools (`xcode-select --install`), which Homebrew needs as well
 - A touch screen of one of the kinds under [Hardware](#hardware)
 
 ## Install
+
+With [Homebrew](https://brew.sh):
+
+```sh
+brew install kashmeister/tap/mactouch
+brew services start mactouch
+```
+
+This builds `MacTouch.app` from source and starts it now and at every login. `mactouch --check` and
+the other commands under [Command line](#command-line) are then on the path as `mactouch`. Upgrade
+with `brew upgrade mactouch`.
+
+Or from a clone of this repository:
 
 ```sh
 git clone https://github.com/kashmeister/mactouch.git
@@ -204,13 +225,16 @@ cd mactouch
 ./install.sh --one-finger-scroll
 ```
 
-This builds `MacTouch.app`, copies it to `~/Applications` and starts it at login. Options given to
-`install.sh` are saved as settings; see [Configuration](#configuration). Everything can also be
-changed later from the menu bar, and new touch screens are paired by touch (see
+This builds `MacTouch.app`, copies it to `~/Applications` and starts it at login; `git pull` and
+`./install.sh` again update it. Options given to `install.sh` are saved as settings; see
+[Configuration](#configuration). Use one way or the other, not both.
+
+Everything can be changed later from the menu bar, and new touch screens are paired by touch (see
 [Touchscreens and profiles](#touchscreens-and-profiles)).
 
 Then enable **MacTouch** in System Settings → Privacy & Security under both **Input Monitoring** and
-**Accessibility**. If it is not listed, add `~/Applications/MacTouch.app` with **+**. MacTouch
+**Accessibility**. If it is not listed, add the app with **+**: `~/Applications/MacTouch.app`, or
+`$(brew --prefix)/opt/mactouch/MacTouch.app` for Homebrew. MacTouch
 restarts itself every 20 s until Input Monitoring is granted, and picks up Accessibility within 2 s.
 The grants are tied to the signing identifier `local.mactouch`, so they survive rebuilds.
 
@@ -446,7 +470,8 @@ Support for more screens, reports of screens that work, and fixes are welcome. S
 ## Uninstall
 
 ```sh
-./uninstall.sh
+brew services stop mactouch && brew uninstall mactouch   # Homebrew
+./uninstall.sh                                            # from a clone
 ```
 
 Then remove the MacTouch entries from Accessibility and Input Monitoring.
