@@ -18,6 +18,15 @@ extension String {
     var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
 let logPath = NSHomeDirectory() + "/Library/Logs/MacTouch.log"
+
+/// Opened by hand or as a login item, MacTouch's output goes to /dev/null: send it to the log the
+/// menu's Open Log shows instead. (install.sh's and Homebrew's launch agents send it there already.)
+func logToFileIfDetached() {
+    var st = stat()
+    guard isatty(1) == 0, fstat(1, &st) == 0, st.st_mode & S_IFMT == S_IFCHR else { return }
+    freopen(logPath, "a", stdout); freopen(logPath, "a", stderr)
+    setvbuf(stdout, nil, _IOLBF, 0)
+}
 let repoURL = "https://github.com/kashmeister/mactouch"
 
 /// A notification banner, through AppleScript (MacTouch has no notification entitlement).

@@ -57,7 +57,7 @@ let options = [
     Option(flag: "--piano-octaves", key: "pianoOctaves", kind: .int, help: "music piano size, 1 to 6 octaves (3)"),
     Option(flag: "--piano-sound", key: "pianoSound", kind: .int, help: "music piano General MIDI program (0)"),
 ]
-let actionFlags: Set<String> = ["--check", "--save", "--reset", "--probe", "--raw", "--help"]
+let actionFlags: Set<String> = ["--check", "--save", "--reset", "--probe", "--raw", "--help", "--takeover"]   // --takeover: see LoginItem.swift
 
 let optionWidth = options.map(\.spelled.count).max()! + 2
 let usage = """

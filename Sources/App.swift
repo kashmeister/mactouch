@@ -62,7 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         log("start \(Bundle.main.bundleIdentifier ?? "unbundled") probe=\(probe) settings: \(cfg)")
         // Input Monitoring applies to new processes only, and a running process never sees the grant:
-        // exit after a while (non-zero, so launchd restarts us) and let a fresh process try again.
+        // after a while, let a fresh process try again.
         // Opening fails as a whole if one matched device cannot be opened (a keyboard interface, say), so
         // only a missing permission counts as missing.
         let opened = IOHIDManagerOpen(mgr, IOOptionBits(kIOHIDOptionsTypeNone))
@@ -72,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard opened == kIOReturnSuccess || IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted else {
             log("Input Monitoring missing (open returned \(hex(UInt32(bitPattern: opened)))); enable MacTouch in System Settings > Privacy & Security > Input Monitoring")
             _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-            Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { _ in exit(75) }
+            Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { _ in restartProcess() }
             return
         }
         hidOpen = true
@@ -167,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         calibrationItems(menu, mp, suffix)
         touchscreens(menu)
         menu.addItem(.separator())
+        startAtLoginItem(menu)
         add(menu, "Open Log", #selector(openLog(_:)))
         add(menu, "MacTouch on GitHub", #selector(openRepo(_:)))
         add(menu, "Quit MacTouch", #selector(quit(_:)), key: "q")
@@ -240,6 +241,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "Accessibility Keyboard", action: nil, keyEquivalent: "").submenu = sub
     }
 
+    func startAtLoginItem(_ menu: NSMenu) {
+        if let other = startedByOther { add(menu, "Start at Login (set up by \(other))", nil, on: true); return }
+        let status = loginAgent.status
+        add(menu, status == .requiresApproval ? "Start at Login (allow it in System Settings ▸ Login Items)" : "Start at Login",
+            #selector(toggleStartAtLogin(_:)), on: status == .enabled || status == .requiresApproval)
+    }
+
     func ringColors(_ menu: NSMenu) {
         let presets = [("Gauge Orange", "#FF6A00"), ("Amber", "#FFB000"), ("White", "#FFFFFF"),
                        ("Green", "#34C759"), ("Red", "#FF3B30"), ("Accent Color", "accent")]
@@ -300,6 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         defaults.removeObject(forKey: keyboardOffForNoTouchscreen); keyboardHandedBack = true
         setKeyboard(!(keyboardOn() ?? true), "from the menu")
     }
+    @objc func toggleStartAtLogin(_ s: NSMenuItem) { setStartAtLogin(s.state != .on) }
     @objc func toggleEdge(_ s: NSMenuItem) { setSetting("edge", cfg.edge > 0 ? 0.0 : 12.0) }
     @objc func choose(_ s: NSMenuItem) {
         guard let kv = s.representedObject as? [Any], let key = kv[0] as? String else { return }

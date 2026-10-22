@@ -52,6 +52,8 @@ watchDisplayChanges()
 configureMatching()
 if checkOnly { printCheck() }
 
+logToFileIfDetached()
+ensureSingleInstance()
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate

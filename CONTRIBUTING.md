@@ -8,7 +8,7 @@ by hand.
 ## Build and test
 
 ```sh
-./build.sh                                         # builds build/MacTouch.app
+./build.sh                                         # builds build/MacTouch.app (--arch=x86_64, arm64 or universal)
 build/MacTouch.app/Contents/MacOS/MacTouch --self-test
 ./install.sh                                       # installs and restarts the menu bar app
 tail -f ~/Library/Logs/MacTouch.log
@@ -46,6 +46,7 @@ All code is in `Sources/`, one area per file, with no dependencies beyond macOS.
 | `Keyboard.swift` | Accessibility Keyboard: keeping its position, Auto Keyboard |
 | `Music.swift`, `Sketch.swift` | Music mode, Whiteboard and Draw on Screen |
 | `App.swift` | Menu bar item and menu |
+| `LoginItem.swift` | Start at Login (a launch agent inside the app, registered with SMAppService), and one copy running at a time |
 | `Check.swift`, `SelfTest.swift`, `Capture.swift` | `--check`, `--self-test` and `--capture` |
 | `Support.swift` | Logging and small helpers |
 

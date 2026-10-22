@@ -200,7 +200,7 @@ October 2026; UPDD from Touch-Base's documentation, not tested here. Corrections
 
 ## Requirements
 
-- macOS 26 (tested); earlier versions from 13 may work but are untested
+- macOS 13 or later on Apple silicon or Intel; tested on macOS 26
 - Apple's Command Line Tools, to build it: `xcode-select --install`. Not the full Xcode app. Homebrew
   installs them when it is set up, so with Homebrew there is nothing more to install.
 - A touch screen of one of the kinds under [Hardware](#hardware)
@@ -227,8 +227,11 @@ cd mactouch
 ./install.sh --one-finger-scroll
 ```
 
-This builds `MacTouch.app`, copies it to `~/Applications` and starts it at login; `git pull` and
-`./install.sh` again update it. Options given to `install.sh` are saved as settings; see
+This builds `MacTouch.app` for the Mac's own processor, copies it to `~/Applications` and starts it at
+login; `git pull` and `./install.sh` again update it. To build an app for another Mac, run
+`./build.sh --arch=x86_64` (Intel), `--arch=arm64` (Apple silicon) or `--arch=universal` (both, at
+twice the size); the result is `build/MacTouch.app`. An app copied to a Mac that way can start itself
+at login with **Start at Login** in its menu. Options given to `install.sh` are saved as settings; see
 [Configuration](#configuration). Use one way or the other, not both.
 
 Everything can be changed later from the menu bar, and new touch screens are paired by touch (see
@@ -273,6 +276,7 @@ touch screen is missing; the first lines of the menu say which.
 | Undo Calibration | Switch back to the calibration before the last change; choose it again to redo |
 | Reset Calibration | Go back to an uncalibrated mapping; Undo restores the calibration |
 | Touchscreens | One submenu per known screen, connected or not: its kind and display; Pair with Display…; Calibrate Touch…, Undo and Reset Calibration; One-Finger Scroll; Mode (Automatic, Multi-Touch, Single Touch, Not a Touchscreen); Forget This Touchscreen |
+| Start at Login | Start MacTouch at every login, through a login item in its own bundle (System Settings ▸ General ▸ Login Items). Shown as set up, and greyed out, when `install.sh` or `brew services` starts MacTouch instead |
 | Open Log | Open `~/Library/Logs/MacTouch.log` |
 | Quit MacTouch | Quit until the next login |
 
