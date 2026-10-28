@@ -84,6 +84,17 @@ With one-finger scroll, a ring appears under the finger when the hold registers 
 next 0.5 s. Move while it shows to drag; when it is full, the right click fires. Its colour is set
 under **Hold Ring Color** in the menu; the default is a warm gauge orange.
 
+Touch and the mouse or trackpad act as two pointers. A touch takes the pointer to the finger, and
+0.2 s after the gesture ends it goes back to where the mouse or trackpad left it, so there is no
+need to bring it back from the touch screen. If the mouse left it on the touch screen's own display,
+it stays with the touch. Touches that follow each other quickly, like typing on the Accessibility
+Keyboard or a double tap, keep the pointer until the last one ends, and a scroll that carries on
+after the lift keeps it until the scroll stops, since scrolling goes to the window under the
+pointer. Moving the mouse during a touch keeps the pointer where it is, and on a Mac used by touch
+alone (no mouse or trackpad has moved the pointer since MacTouch started) it stays at the last
+touch. Hover effects end when the pointer leaves: a menu on a web page that opens on hover closes
+again. Turn it off under **Return Pointer After Touch** in the menu.
+
 A tap clicks on lift, where the finger rested (the median of its positions), so a hold can still
 become a right click. As a finger lifts, many panels report one last position 10 pt or more away;
 a move counts only once the next report confirms it, so that jump never turns a tap into a drag.
@@ -255,6 +266,7 @@ touch screen is missing; the first lines of the menu say which.
 |---|---|
 | Status lines | One per touch screen: active and on which display, waiting to be paired, or what is missing |
 | Pause Touch | Ignore the touch screens until unpaused |
+| Return Pointer After Touch | After each touch, put the pointer back where the mouse or trackpad left it on another display, so touch and mouse feel like two pointers (on by default); see [How it works](#how-it-works) |
 | One-Finger Scroll | iPad-style scrolling, see [How it works](#how-it-works). Per screen: with several connected, the item names the screen touched last |
 | Two-Finger Tap Right-Clicks | Two-finger tap as a right click (multi-touch screens only) |
 | Invert Scrolling | Reverse both scroll gestures |
@@ -437,6 +449,7 @@ switches take `=false` to turn them off.
 | `--display=VENDOR:MODEL` | paired by touch | CoreGraphics vendor and model (optionally `:serial`) of its display, or `main` |
 | `--flip-x`, `--flip-y`, `--swap` | off | Axis fixes applied after the display rotation |
 | `--cal=ax,bx,ay,by[,x0,x1,y0,y1]` | none | Calibration as `touched = a × target + b`, in fractions of the touch panel's own axes (before rotation), so it holds in every rotation, optionally with the touched values 2% from each edge; set by the wizard |
+| `--return-pointer` | on | After a touch, put the pointer back where the mouse or trackpad left it |
 | `--one-finger-scroll` | off | iPad-style one-finger scrolling |
 | `--two-finger-tap` | off | Two-finger tap right clicks |
 | `--hold=` | `0.6` | Long-press time in seconds |

@@ -8,7 +8,7 @@ struct Config {
     var flipX = false, flipY = false, swap = false
     var cal: [Double] = [1, 0, 1, 0]
     var oneFingerScroll = false, twoFingerTap = false, invertScroll = false, paused = false, keepKeyboard = true, autoKeyboard = true
-    var keyboardFollowsTouch = true
+    var keyboardFollowsTouch = true, returnPointer = true
     var pianoOctaves = 3, pianoSound = 0, pianoShift = 0, pianoDynamics = false
     var musicMode = "piano", strumSound = 46, thereminWave = 0, thereminSnap = false, metronomeBPM = 0
     var hold = 0.6, scrollScale = 1.0, momentum = 0.998, zoomScale = 1.0, titlebar = 44.0
@@ -36,6 +36,7 @@ let options = [
     Option(flag: "--flip-y", key: "flipY", kind: .bool, help: "mirror Y"),
     Option(flag: "--swap", key: "swap", kind: .bool, help: "swap X and Y"),
     Option(flag: "--cal", key: "cal", kind: .cal, help: "ax,bx,ay,by[,x0,x1,y0,y1]: calibration, touched = a*target + b in panel fractions, and touched values near the edges (set by the wizard)"),
+    Option(flag: "--return-pointer", key: "returnPointer", kind: .bool, help: "after a touch, put the pointer back where the mouse or trackpad left it (on)"),
     Option(flag: "--one-finger-scroll", key: "oneFingerScroll", kind: .bool, help: "one finger scrolls; hold, then move, drags"),
     Option(flag: "--hold", key: "hold", kind: .double, help: "long-press time in seconds (0.6)"),
     Option(flag: "--two-finger-tap", key: "twoFingerTap", kind: .bool, help: "a two-finger tap right-clicks"),
@@ -177,7 +178,7 @@ func loadConfig() -> Config {
         rd("flipX", \.flipX); rd("flipY", \.flipY); rd("swap", \.swap); rd("cal", \.cal)
         rd("oneFingerScroll", \.oneFingerScroll); rd("hold", \.hold)
     }
-    rd("twoFingerTap", \.twoFingerTap)
+    rd("twoFingerTap", \.twoFingerTap); rd("returnPointer", \.returnPointer)
     rd("invertScroll", \.invertScroll); rd("paused", \.paused); rd("keepKeyboard", \.keepKeyboard)
     rd("scrollScale", \.scrollScale); rd("momentum", \.momentum); c.momentum = min(max(c.momentum, 0), 0.999)
     rd("zoomScale", \.zoomScale); rd("titlebar", \.titlebar)

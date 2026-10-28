@@ -135,6 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for line in statusLines { add(menu, line, nil) }
         menu.addItem(.separator())
         add(menu, "Pause Touch", #selector(toggle(_:)), on: cfg.paused, obj: "paused")
+        add(menu, "Return Pointer After Touch", #selector(toggle(_:)), on: cfg.returnPointer, obj: ["returnPointer"])
         menu.addItem(.separator())
         // Screen settings act on the screen touched last; with several connected, its name says which.
         let mp = menuProfile, p = mp.flatMap { screens[$0] } ?? [:]
@@ -285,6 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "paused": return cfg.paused
         case "oneFingerScroll": return profile == nil ? cfg.oneFingerScroll : false
         case "twoFingerTap": return cfg.twoFingerTap
+        case "returnPointer": return cfg.returnPointer
         case "invertScroll": return cfg.invertScroll
         case "keepKeyboard": return cfg.keepKeyboard
         case "autoKeyboard": return cfg.autoKeyboard

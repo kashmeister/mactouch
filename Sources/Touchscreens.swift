@@ -371,19 +371,22 @@ func release(_ t: TouchDevice, _ d: IOHIDDevice) {
 // are dropped. That is a hardware event (no posting process), not from a trackpad, while the screen
 // is touched or within 80 ms of its last report. MacTouch's own events carry its pid and pass. It
 // stops the clicks, but not macOS moving the cursor.
+// The tap also notices a mouse or trackpad moving the pointer, for the pointer return (Gestures.swift).
 var eventTap: CFMachPort?
 let tapCB: CGEventTapCallBack = { _, type, event, _ in
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
         return Unmanaged.passUnretained(event)
     }
-    guard event.getIntegerValueField(.eventSourceUnixProcessID) == 0,
-          event.getIntegerValueField(.mouseEventSubtype) == 0 else { return Unmanaged.passUnretained(event) }
+    guard event.getIntegerValueField(.eventSourceUnixProcessID) == 0 else { return Unmanaged.passUnretained(event) }
     let t = now()
-    let fromTouch = devices.values.contains {
+    let fromTouch = event.getIntegerValueField(.mouseEventSubtype) == 0 && devices.values.contains {
         $0.kind == .singleTouch && $0.seized == nil && ($0.touching || t - $0.lastReport < 0.08) && $0.driven
     }
-    return fromTouch ? nil : Unmanaged.passUnretained(event)
+    if fromTouch { return nil }
+    if [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged].contains(type),
+       event.getIntegerValueField(.mouseEventDeltaX) != 0 || event.getIntegerValueField(.mouseEventDeltaY) != 0 { handMoved() }
+    return Unmanaged.passUnretained(event)
 }
 func startEventTap() {
     guard eventTap == nil, AXIsProcessTrusted() else { return }

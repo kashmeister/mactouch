@@ -89,6 +89,45 @@ func endGesture() {   // release anything held, e.g. when pausing or the control
     mode = .idle
     stopMomentum()
     holdRing.hide()
+    returnPointer(after: 0)
+}
+
+// MARK: pointer return
+
+// Touch and mouse act like two pointers: a touch takes the pointer to the finger, and once the gesture
+// is over the pointer goes back to where the mouse or trackpad left it, if that is on another display.
+// Only once a mouse or trackpad has moved it: on a screen used by touch alone the pointer stays at the
+// last touch. Touching the mouse during a touch hands the pointer over for good. The return waits a
+// moment, so an app sees the pointer where it was clicked, and touches in quick succession (typing on
+// the Accessibility Keyboard, a double tap) do not swing it back and forth; it waits for a momentum
+// scroll to stop, as scrolling goes to the window under the pointer.
+var pointerHome: CGPoint?, handMovedPointer = false, returnSeq = 0
+let returnDelay = 0.2
+
+func touchTakesPointer() {   // touch-down
+    returnSeq += 1   // a touch before the last one's return keeps its home
+    guard cfg.returnPointer, handMovedPointer else { pointerHome = nil; return }
+    // A pointer already on the touched display was put there to be used with it: it stays with the touch.
+    if pointerHome == nil, let at = CGEvent(source: nil)?.location, !CGDisplayBounds(targetDisplay()).contains(at) {
+        pointerHome = at
+    }
+}
+
+func returnPointer(after delay: Double = returnDelay) {
+    guard pointerHome != nil, momentum == nil else { return }   // momentum returns it when it stops
+    returnSeq += 1
+    let seq = returnSeq
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+        guard seq == returnSeq, let home = pointerHome else { return }
+        pointerHome = nil
+        if let at = CGEvent(source: nil)?.location, dist(at, home) < 1 { return }
+        post(.mouseMoved, home); log("pointer back to \(Int(home.x)),\(Int(home.y))")
+    }
+}
+
+func handMoved() {   // a mouse or trackpad moved the pointer: from now on it is the mouse's
+    handMovedPointer = true
+    if pointerHome != nil { pointerHome = nil; log("pointer taken by the mouse") }
 }
 
 // Hold cue for one-finger scroll: once a hold registers, a ring under the finger fills over
@@ -198,7 +237,7 @@ func momentumTick() {
     guard var m = momentum else { return }
     let t = now(), dt = t - m.last, k = pow(cfg.momentum, dt * 1000)
     m.v = CGPoint(x: m.v.x * k, y: m.v.y * k); m.last = t
-    guard hypot(m.v.x, m.v.y) > 15, cfg.momentum > 0 else { stopMomentum(); return }
+    guard hypot(m.v.x, m.v.y) > 15, cfg.momentum > 0 else { stopMomentum(); returnPointer(); return }
     momentum = m
     scroll(m.v.x * dt, m.v.y * dt)
 }
@@ -319,6 +358,7 @@ func commit() {
         let asleep = CGDisplayIsAsleep(targetDisplay()) != 0
         declareUserActivity()
         if asleep { mode = .done; log("touch woke the display"); return }   // wake only, like a phone
+        touchTakesPointer()
     }
     switch n {
     case 0:
@@ -344,6 +384,7 @@ func commit() {
         default: break
         }
         mode = .idle
+        returnPointer()
     case 1:
         let p = active[0]
         switch mode {
