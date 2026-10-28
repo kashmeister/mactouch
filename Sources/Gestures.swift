@@ -97,12 +97,11 @@ func endGesture() {   // release anything held, e.g. when pausing or the control
 // Touch and mouse act like two pointers: a touch takes the pointer to the finger, and once the gesture
 // is over the pointer goes back to where the mouse or trackpad left it, if that is on another display.
 // Only once a mouse or trackpad has moved it: on a screen used by touch alone the pointer stays at the
-// last touch. Touching the mouse during a touch hands the pointer over for good. The return waits a
-// moment, so an app sees the pointer where it was clicked, and touches in quick succession (typing on
-// the Accessibility Keyboard, a double tap) do not swing it back and forth; it waits for a momentum
-// scroll to stop, as scrolling goes to the window under the pointer.
+// last touch. Touching the mouse during a touch hands the pointer over for good. The return waits
+// 50 ms, so an app busy with the click still finds the pointer where it clicked. A momentum scroll
+// does not hold it: scrolls go to where they started (see scroll).
 var pointerHome: CGPoint?, handMovedPointer = false, returnSeq = 0
-let returnDelay = 0.2
+let returnDelay = 0.05
 
 func touchTakesPointer() {   // touch-down
     returnSeq += 1   // a touch before the last one's return keeps its home
@@ -114,7 +113,7 @@ func touchTakesPointer() {   // touch-down
 }
 
 func returnPointer(after delay: Double = returnDelay) {
-    guard pointerHome != nil, momentum == nil else { return }   // momentum returns it when it stops
+    guard pointerHome != nil else { return }
     returnSeq += 1
     let seq = returnSeq
     DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
@@ -187,6 +186,10 @@ final class HoldRing {
 }
 let holdRing = HoldRing()
 
+// A scroll goes to the window where it started, as a trackpad's does, not to whatever is under the
+// pointer: macOS routes a posted scroll by the event's location. So its momentum keeps going there
+// after the pointer has gone back to the mouse.
+var scrollAt = CGPoint.zero
 func scroll(_ dx: Double, _ dy: Double) {
     let dir = cfg.invertScroll ? -1.0 : 1.0
     accX += dx * cfg.scrollScale * dir; accY += dy * cfg.scrollScale * dir
@@ -194,6 +197,7 @@ func scroll(_ dx: Double, _ dy: Double) {
     if ix == 0 && iy == 0 { return }
     accX -= Double(ix); accY -= Double(iy)
     guard let e = CGEvent(scrollWheelEvent2Source: src, units: .pixel, wheelCount: 2, wheel1: iy, wheel2: ix, wheel3: 0) else { return }
+    e.location = scrollAt
     e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
     e.post(tap: .cghidEventTap)
 }
@@ -237,7 +241,7 @@ func momentumTick() {
     guard var m = momentum else { return }
     let t = now(), dt = t - m.last, k = pow(cfg.momentum, dt * 1000)
     m.v = CGPoint(x: m.v.x * k, y: m.v.y * k); m.last = t
-    guard hypot(m.v.x, m.v.y) > 15, cfg.momentum > 0 else { stopMomentum(); returnPointer(); return }
+    guard hypot(m.v.x, m.v.y) > 15, cfg.momentum > 0 else { stopMomentum(); return }
     momentum = m
     scroll(m.v.x * dt, m.v.y * dt)
 }
@@ -424,7 +428,7 @@ func commit() {
                 } else if pressClicks > 1 {   // tap, then touch and move: select by word (or line)
                     startDrag(lastTapPt, p, clicks: pressClicks)
                 } else if cfg.oneFingerScroll && !inDragApp {
-                    mode = .scroll1; accX = 0; accY = 0; scrollSamples = []
+                    mode = .scroll1; accX = 0; accY = 0; scrollSamples = []; scrollAt = s
                     fingerScroll(p.x - s.x, p.y - s.y); log("scroll start (1 finger)")
                 } else { startDrag(s, p) }
             }
@@ -471,7 +475,7 @@ func commit() {
                         if zoomHere == "gesture" { magnify(0, phase: 1, at: c) }
                         log("zoom start (\(zoomHere)) in \(app)")
                     } else if dc > moveTol {
-                        kind = .scroll; scrollSamples = []; log("scroll start (\(n) fingers)")
+                        kind = .scroll; scrollSamples = []; scrollAt = twoStart; log("scroll start (\(n) fingers)")
                     }
                 }
                 switch kind {

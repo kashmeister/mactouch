@@ -85,15 +85,14 @@ next 0.5 s. Move while it shows to drag; when it is full, the right click fires.
 under **Hold Ring Color** in the menu; the default is a warm gauge orange.
 
 Touch and the mouse or trackpad act as two pointers. A touch takes the pointer to the finger, and
-0.2 s after the gesture ends it goes back to where the mouse or trackpad left it, so there is no
-need to bring it back from the touch screen. If the mouse left it on the touch screen's own display,
-it stays with the touch. Touches that follow each other quickly, like typing on the Accessibility
-Keyboard or a double tap, keep the pointer until the last one ends, and a scroll that carries on
-after the lift keeps it until the scroll stops, since scrolling goes to the window under the
-pointer. Moving the mouse during a touch keeps the pointer where it is, and on a Mac used by touch
-alone (no mouse or trackpad has moved the pointer since MacTouch started) it stays at the last
-touch. Hover effects end when the pointer leaves: a menu on a web page that opens on hover closes
-again. Turn it off under **Return Pointer After Touch** in the menu.
+as the gesture ends it goes back to where the mouse or trackpad left it, so there is no need to
+bring it back from the touch screen. If the mouse left it on the touch screen's own display, it
+stays with the touch. A scroll goes to the window where it started, as on a trackpad, so its
+momentum carries on there after the pointer has gone back. Moving the mouse during a touch keeps the
+pointer where it is, and on a Mac used by touch alone (no mouse or trackpad has moved the pointer
+since MacTouch started) it stays at the last touch. Hover effects end when the pointer leaves: a
+menu on a web page that opens on hover closes again. Turn it off under **Return Pointer After
+Touch** in the menu.
 
 A tap clicks on lift, where the finger rested (the median of its positions), so a hold can still
 become a right click. As a finger lifts, many panels report one last position 10 pt or more away;
