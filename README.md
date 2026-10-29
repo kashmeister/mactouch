@@ -103,6 +103,10 @@ tap continues it: lifted, it is a double or triple click; moved, it selects by w
 by line, so text can be selected without turning one-finger scroll off. It may wobble 20 pt before
 it counts as moving, and it never turns into a hold.
 
+Scrolls carry a trackpad's phases (began, changed, ended, then momentum), so apps treat them as
+trackpad scrolls: lists stretch at their ends and spring back, and a scroll and its momentum stay
+with the window they started in.
+
 Pinch posts the same magnify gesture event as a trackpad, which Safari, Preview, Maps and most
 native apps understand. The event fields are private, the technique used by
 [Mac Mouse Fix](https://github.com/noah-nuebling/mac-mouse-fix). In apps listed as zoom-key apps,

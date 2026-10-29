@@ -87,7 +87,7 @@ func declareUserActivity() {
 func endGesture() {   // release anything held, e.g. when pausing or the controller goes away
     if case .dragging = mode { post(.leftMouseUp, shifted(lastPt), clickState: dragClicks) }
     mode = .idle
-    stopMomentum()
+    endScroll(); stopMomentum()
     holdRing.hide()
     returnPointer(after: 0)
 }
@@ -99,7 +99,7 @@ func endGesture() {   // release anything held, e.g. when pausing or the control
 // Only once a mouse or trackpad has moved it: on a screen used by touch alone the pointer stays at the
 // last touch. Touching the mouse during a touch hands the pointer over for good. The return waits
 // 50 ms, so an app busy with the click still finds the pointer where it clicked. A momentum scroll
-// does not hold it: scrolls go to where they started (see scroll).
+// does not hold it: it stays with the window it began in (see scroll).
 var pointerHome: CGPoint?, handMovedPointer = false, returnSeq = 0
 let returnDelay = 0.05
 
@@ -186,20 +186,33 @@ final class HoldRing {
 }
 let holdRing = HoldRing()
 
-// A scroll goes to the window where it started, as a trackpad's does, not to whatever is under the
-// pointer: macOS routes a posted scroll by the event's location. So its momentum keeps going there
-// after the pointer has gone back to the mouse.
-var scrollAt = CGPoint.zero
-func scroll(_ dx: Double, _ dy: Double) {
+// Scrolls carry a trackpad's phases: began, changed and ended while fingers are down, then begin,
+// continue and end for the momentum. macOS sends every event of such a scroll, momentum included, to
+// the window where it began, so a momentum scroll keeps going there after the pointer has gone back
+// to the mouse. (A scroll event's location would route it too, but moves the pointer there.) The
+// momentum has to begin while the pointer is still at the touch.
+enum ScrollPhase: Int64 { case none = 0, began = 1, changed = 2, ended = 4 }
+enum MomentumPhase: Int64 { case none = 0, begin = 1, `continue` = 2, end = 3 }
+var scrollPhaseOpen = false
+
+func scroll(_ dx: Double, _ dy: Double, _ phase: ScrollPhase = .none, momentum: MomentumPhase = .none) {
     let dir = cfg.invertScroll ? -1.0 : 1.0
     accX += dx * cfg.scrollScale * dir; accY += dy * cfg.scrollScale * dir
     let ix = Int32(accX.rounded(.towardZero)), iy = Int32(accY.rounded(.towardZero))
-    if ix == 0 && iy == 0 { return }
+    let marker = phase == .began || phase == .ended || momentum == .begin || momentum == .end   // sent even without movement
+    if ix == 0 && iy == 0 && !marker { return }
     accX -= Double(ix); accY -= Double(iy)
     guard let e = CGEvent(scrollWheelEvent2Source: src, units: .pixel, wheelCount: 2, wheel1: iy, wheel2: ix, wheel3: 0) else { return }
-    e.location = scrollAt
     e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+    e.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase.rawValue)
+    e.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum.rawValue)
     e.post(tap: .cghidEventTap)
+}
+
+func beginScroll() { scroll(0, 0, .began); scrollPhaseOpen = true }
+func endScroll() {   // fingers off or the gesture turned into something else
+    guard scrollPhaseOpen else { return }
+    scroll(0, 0, .ended); scrollPhaseOpen = false
 }
 
 // MARK: scroll momentum
@@ -213,7 +226,7 @@ func fingerScroll(_ dx: Double, _ dy: Double) {
     let t = now()
     scrollSamples.removeAll { t - $0.t > 0.1 }
     scrollSamples.append((t, dx, dy))
-    scroll(dx, dy)
+    scroll(dx, dy, .changed)
 }
 
 /// The finger's speed as it lifted, in points per second: its moves over the last 100 ms, leaving out
@@ -234,6 +247,7 @@ func startMomentum() {
     let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { _ in momentumTick() }
     RunLoop.main.add(timer, forMode: .common)
     momentum = (CGPoint(x: v0.x * cap, y: v0.y * cap), now(), timer)
+    scroll(0, 0, momentum: .begin)
     log("momentum at \(Int(speed * cap)) pt/s")
 }
 
@@ -243,7 +257,7 @@ func momentumTick() {
     m.v = CGPoint(x: m.v.x * k, y: m.v.y * k); m.last = t
     guard hypot(m.v.x, m.v.y) > 15, cfg.momentum > 0 else { stopMomentum(); return }
     momentum = m
-    scroll(m.v.x * dt, m.v.y * dt)
+    scroll(m.v.x * dt, m.v.y * dt, momentum: .continue)
 }
 
 /// Stops the momentum scroll, if any; returns whether one was running.
@@ -251,6 +265,7 @@ func momentumTick() {
 func stopMomentum() -> Bool {
     guard let m = momentum else { return false }
     m.timer.invalidate(); momentum = nil
+    scroll(0, 0, momentum: .end)
     return true
 }
 
@@ -378,11 +393,11 @@ func commit() {
             post(.leftMouseUp, shifted(lastPt), clickState: dragClicks); log("drag end at \(Int(lastPt.x)),\(Int(lastPt.y))")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { rememberKeyboard() }   // the keyboard may have moved
         case .swipe(_, _, let fired): if !fired { log("swipe end (too short)") }
-        case .scroll1: log("scroll end (1 finger)"); startMomentum()
+        case .scroll1: log("scroll end (1 finger)"); endScroll(); startMomentum()
         case .two(let c, let t0, let kind):
             switch kind {
             case .zoom: if zoomHere == "gesture" { magnify(0, phase: 4, at: c) }; log("zoom end")
-            case .scroll: log("scroll end"); startMomentum()
+            case .scroll: log("scroll end"); endScroll(); startMomentum()
             case .undecided: if cfg.twoFingerTap && now() - t0 < tapMaxSecs { rightClick(twoStart, "two-finger tap") }
             }
         default: break
@@ -428,8 +443,8 @@ func commit() {
                 } else if pressClicks > 1 {   // tap, then touch and move: select by word (or line)
                     startDrag(lastTapPt, p, clicks: pressClicks)
                 } else if cfg.oneFingerScroll && !inDragApp {
-                    mode = .scroll1; accX = 0; accY = 0; scrollSamples = []; scrollAt = s
-                    fingerScroll(p.x - s.x, p.y - s.y); log("scroll start (1 finger)")
+                    mode = .scroll1; accX = 0; accY = 0; scrollSamples = []
+                    beginScroll(); fingerScroll(p.x - s.x, p.y - s.y); log("scroll start (1 finger)")
                 } else { startDrag(s, p) }
             }
         case .held(let s):
@@ -444,6 +459,7 @@ func commit() {
         let c = CGPoint(x: active.map(\.x).reduce(0, +) / Double(n), y: active.map(\.y).reduce(0, +) / Double(n))
         let d = dist(active[0], active[1])
         let minFingers = cfg.swipes == "4" ? 4 : 3
+        if case .scroll1 = mode { endScroll() }   // a second finger: what follows is a new gesture
         if case .swipe(let origin, let last, var fired) = mode {
             // Finger count changed: shift the origin so the travel so far is kept, not the centroid jump.
             let o = n == lastN ? origin : CGPoint(x: origin.x + c.x - last.x, y: origin.y + c.y - last.y)
@@ -475,7 +491,7 @@ func commit() {
                         if zoomHere == "gesture" { magnify(0, phase: 1, at: c) }
                         log("zoom start (\(zoomHere)) in \(app)")
                     } else if dc > moveTol {
-                        kind = .scroll; scrollSamples = []; scrollAt = twoStart; log("scroll start (\(n) fingers)")
+                        kind = .scroll; scrollSamples = []; beginScroll(); log("scroll start (\(n) fingers)")
                     }
                 }
                 switch kind {
