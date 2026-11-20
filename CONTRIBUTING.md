@@ -147,7 +147,12 @@ KnownController(name: "Example 15.6\" touch monitor",
   the first.
 - **`takeDevice: true`** (between `layout:` and `samples:`) makes MacTouch take the whole USB device from macOS the moment it appears and
   configure it without drivers for its interfaces. Set it only if the controller changes mode, or
-  stops reporting, once macOS's HID driver has read the interface. The CX158 needs it; most don't.
+  stops reporting, once macOS's HID driver has read the interface. The CX158 and the CX156A need it;
+  most don't. Such a controller may only show its digitizer mode for a few seconds after it
+  powers up, too short to run `--capture` by hand; the CX156A's switches about 5 s after macOS's
+  HID driver attaches. Its HID report descriptor can still be read from the IORegistry in that
+  window (`ioreg -r -c IOHIDDevice -l -w0`, the `ReportDescriptor` of the entry with its product
+  ID), and decoded to give the layout.
 - **`samples`** are reports copied from your capture: the leading bytes as hex (the rest are taken as
   zeros), the report length, the contact count byte, and the contacts it holds as raw coordinates by
   contact ID. Include at least one finger, two fingers and a lift. `--self-test` decodes every sample.

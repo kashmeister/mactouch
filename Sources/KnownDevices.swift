@@ -107,6 +107,24 @@ let knownControllers = [
                                           // nothing touching
                                           RawSample(start: "01 98 4f 4f 2f 14 96 6a 35 04 38", length: 56, count: 0, contacts: [:]),
                                       ])),
+    // CX156A portable monitor ("MTouch"). Its controller powers up in digitizer mode, 0416:c168, and
+    // falls back for good to mouse mode, 0416:c169 (single touch), about 5 s after macOS's HID driver
+    // reads the digitizer interface. It has no Input Mode feature to set. Reports: ID 1, ten 5-byte
+    // contacts (status, X 0...1920, Y 0...1080), scan time, contact count in the last byte; a contact
+    // ends with one more report without its tip bit, and the count byte keeps its last value.
+    KnownController(name: "CX156A", modes: [USBID(0x0416, 0xC168), USBID(0x0416, 0xC169)],
+                    raw: RawInterface(id: USBID(0x0416, 0xC168), interface: 0,
+                                      layout: ReportLayout(reportID: 1, maxX: 1920, maxY: 1080), takeDevice: true, samples: [
+                                          // one finger (contact 0)
+                                          RawSample(start: "01 01 d3 03 4a 02", length: 56, count: 1, contacts: [0: (979, 586)]),
+                                          // two fingers, contacts 0 and 1
+                                          RawSample(start: "01 01 b2 03 ca 01 03 2a 03 6a 02", length: 56, count: 2,
+                                                    contacts: [0: (946, 458), 1: (810, 618)]),
+                                          // contact 1 lifted, contact 0 still down
+                                          RawSample(start: "01 01 23 00 d9 03 02 26 03 6f 02", length: 56, count: 2, contacts: [0: (35, 985)]),
+                                          // both lifted: the count byte still says 2
+                                          RawSample(start: "01 00 23 00 d9 03 02 26 03 6f 02", length: 56, count: 2, contacts: [:]),
+                                      ])),
 ]
 
 func knownController(for id: USBID) -> KnownController? { knownControllers.first { $0.modes.contains(id) } }

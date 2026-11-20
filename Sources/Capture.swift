@@ -52,9 +52,14 @@ func runCapture(_ id: USBID, interface n: Int, seconds: Double) -> Never {
         }
         k += len
     }
-    try? dev.__configure(withValue: 0, matchInterfaces: false)
-    do { try dev.__configure(withValue: Int(cfg.pointee.bConfigurationValue), matchInterfaces: false) }
-    catch { fail("could not configure \(id): \(error.localizedDescription)") }
+    // As in takeDevice: setting the configuration again first, unconfiguring only if that is refused.
+    let value = Int(cfg.pointee.bConfigurationValue)
+    do { try dev.__configure(withValue: value, matchInterfaces: false) }
+    catch {
+        try? dev.__configure(withValue: 0, matchInterfaces: false)
+        do { try dev.__configure(withValue: value, matchInterfaces: false) }
+        catch { fail("could not configure \(id): \(error.localizedDescription)") }
+    }
 
     var ifService: io_service_t = 0
     for _ in 0..<20 where ifService == 0 {

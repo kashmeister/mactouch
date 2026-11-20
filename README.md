@@ -5,8 +5,8 @@ nothing on a Mac, or move the pointer on the wrong display; MacTouch, a menu bar
 tap, drag, right click, one- and two-finger scrolling with momentum, pinch to zoom and multi-finger
 swipes, with a built-in calibration wizard. It detects what kind of touch screen is connected, pairs
 each one with its display once, and remembers its settings. Known to work with ILITEK multi-touch
-controllers (such as the Wisecoco bar display) and the CX158 portable monitor (sold as the UPERFECT
-14" OLED 3K), and with any USB touch screen that follows the Windows HID standard.
+controllers (such as the Wisecoco bar display), the CX158 portable monitor (sold as the UPERFECT
+14" OLED 3K) and the CX156A portable monitor, and with any USB touch screen that follows the Windows HID standard.
 
 ```sh
 brew install kashmeister/tap/mactouch
@@ -22,9 +22,12 @@ MacTouch handles three kinds of touch controller and tells them apart when they 
 | HID multi-touch digitizer, the kind Windows drives without a driver | Claims it with its generic HID driver, but nothing happens on touch | Wisecoco 3840 × 1100 bar display: ILITEK controller, USB `222a:0001`, 10 contacts | All |
 | Single-touch screen that presents an absolute-position mouse | Drives it, but puts each touch on whichever display the cursor is on | CX158 portable monitor in mouse mode, USB `0416:c169` | One finger: tap, drag, hold, one-finger scroll |
 | Multi-touch interface macOS attaches no driver to | Nothing: the controller refuses the request for its HID descriptor | CX158 in digitizer mode, USB `eeef:2828`, 10 contacts | All |
+| Multi-touch digitizer that falls back to mouse mode once macOS's HID driver reads it | Drives it as a mouse after about 5 s, on whichever display the cursor is on | CX156A portable monitor ("MTouch"): digitizer mode USB `0416:c168`, mouse mode `0416:c169`, 10 contacts | All |
 
 The CX158 is the model name the panel reports; it is sold under several brands, for example the
-UPERFECT 14" OLED 3K portable monitor. Its controller comes up in either mode.
+UPERFECT 14" OLED 3K portable monitor. Its controller comes up in either mode. The CX156A's
+controller always powers up in digitizer mode, and stays there as long as MacTouch takes the device
+before macOS's HID driver reads it.
 
 To check a monitor, run `MacTouch --check` (see [Usage](#usage)): it lists the displays, the touch
 screens it found and what it does with each. `hidutil list` shows USB IDs and usage pages (13 is a
@@ -58,10 +61,12 @@ events with CGEvent:
 - **Interfaces without a driver** are opened directly with IOUSBHost, which needs no driver or
   entitlement for an interface nobody has claimed, and their reports are decoded with the layout
   listed for the controller in `Sources/KnownDevices.swift`. For a controller that changes mode once
-  macOS's HID driver reads it, like the CX158, MacTouch also takes the whole USB device from macOS
+  macOS's HID driver reads it, like the CX158 and the CX156A, MacTouch also takes the whole USB device from macOS
   the moment it appears and configures it without interface drivers, so that driver never gets to it.
-  For the CX158: report ID 1, ten 5-byte contact slots (finger-down bit, contact ID, X 0–32767,
-  Y 0–20479) and the contact count.
+  It sets the device's configuration again, and unconfigures it first only if that is refused (the
+  CX156A refuses a configuration set right after unconfiguring). For the CX158: report ID 1, ten
+  5-byte contact slots (finger-down bit, contact ID, X 0–32767, Y 0–20479) and the contact count.
+  The CX156A uses the same layout with X 0–1920 and Y 0–1080.
 
 Only one screen drives the gestures at a time: the one whose touch starts while nothing else is
 touched.
@@ -192,7 +197,7 @@ moved CX158 touches onto the right display; `install.sh` stops and removes it.
 | Free and open source (MIT) | ✅ | ✅ | ✅ | ✅ | ❌ paid license |
 | Any HID multi-touch screen | ✅ | ✅ | ✅ | ❌ Xeneon Edge only | ✅ |
 | Single-touch (absolute mouse) screens | ✅ | ❌ | ❌ | ✅ | ✅ |
-| Multi-touch interfaces macOS has no driver for | ✅ known layouts (CX158) | ❌ | ❌ | ❌ | ❓ |
+| Multi-touch interfaces macOS has no driver for | ✅ known layouts (CX158, CX156A) | ❌ | ❌ | ❌ | ❓ |
 | Several touch screens, settings per screen | ✅ profiles, paired by touch | ❌ | ❌ | ❌ | ✅ |
 | Multi-touch | ✅ | ✅ | ✅ | ❌ | ✅ |
 | Tap, double-tap, drag | ✅ | ✅ | ✅ | ✅ | ✅ |

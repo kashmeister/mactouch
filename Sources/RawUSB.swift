@@ -155,10 +155,14 @@ func takeDevice(_ s: io_service_t, for i: RawInterface, attempt: Int = 0) {
         }
         guard let d = dev else { IOObjectRelease(s); return }
         // macOS's composite driver may already have configured the device and let go, leaving its HID
-        // driver on the interfaces: unconfiguring removes them, and the new ones get no driver.
+        // driver on the interfaces: setting the configuration again replaces them, and the new ones get
+        // no driver. Some controllers (the CX156A) refuse it after unconfiguring, so that comes second.
         let value = Int(d.configurationDescriptor?.pointee.bConfigurationValue ?? 1)
-        try? d.__configure(withValue: 0, matchInterfaces: false)
-        try d.__configure(withValue: value, matchInterfaces: false)
+        do { try d.__configure(withValue: value, matchInterfaces: false) }
+        catch {
+            try? d.__configure(withValue: 0, matchInterfaces: false)
+            try d.__configure(withValue: value, matchInterfaces: false)
+        }
         DispatchQueue.main.async {
             takenDevices.append(d)
             log("\(label): took its USB device from macOS after \(attempt * 2) ms, so macOS's HID driver leaves the digitizer alone")
